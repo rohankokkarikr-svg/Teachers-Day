@@ -1,0 +1,276 @@
+import { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Award, User, ArrowRight, Shield, Mail, Lock, CheckCircle2, LogOut } from 'lucide-react';
+import { APP_NAME, APP_YEAR, ROUTES } from '../../lib/constants';
+import Button from '../../components/ui/Button';
+import Input from '../../components/ui/Input';
+import ParticleBackground from '../../components/ui/ParticleBackground';
+import { toast } from '../../components/ui/Toast';
+import { useAuth } from '../../hooks/useAuth';
+
+export default function LoginPage() {
+  const [fullName, setFullName] = useState('');
+  const [isAdminMode, setIsAdminMode] = useState(false);
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const { signInWithName, signIn, isAuthenticated, isAdmin, profile, user, signOut } = useAuth();
+  const navigate = useNavigate();
+
+  // If already logged in, redirect automatically to Vote page (or Admin)
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate(isAdmin ? ROUTES.ADMIN : ROUTES.VOTE, { replace: true });
+    }
+  }, [isAuthenticated, isAdmin, navigate]);
+
+  const handleStudentSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+
+    const cleanName = fullName.trim();
+    if (!cleanName) {
+      setError('Please enter your full name');
+      return;
+    }
+
+    if (cleanName.length < 2) {
+      setError('Name must be at least 2 characters long');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const result = await signInWithName(cleanName);
+      if (result.success) {
+        toast.success(`Welcome, ${cleanName}!`, 'You can now cast your votes.');
+        navigate(ROUTES.VOTE);
+      } else {
+        setError(result.error || 'Failed to sign in. Please try again.');
+        toast.error('Sign In Failed', result.error || 'Could not sign in with this name.');
+      }
+    } catch {
+      toast.error('Authentication Error', 'An unexpected error occurred. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAdminSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+
+    if (!adminEmail || !adminPassword) {
+      setError('Admin email and password are required');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const result = await signIn(adminEmail, adminPassword);
+      if (result.success) {
+        toast.success('Admin Authenticated!', 'Welcome to Admin Dashboard.');
+        navigate(ROUTES.ADMIN);
+      } else {
+        setError(result.error || 'Invalid admin credentials.');
+        toast.error('Admin Auth Failed', result.error || 'Invalid credentials.');
+      }
+    } catch {
+      toast.error('Error', 'Authentication failed.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // If already logged in, show authenticated quick-action card
+  if (isAuthenticated) {
+    const displayName = profile?.full_name || user?.email || 'Student';
+    return (
+      <div className="min-h-[100dvh] flex items-center justify-center px-4 py-8 relative">
+        <ParticleBackground count={15} />
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            background:
+              'radial-gradient(ellipse 60% 50% at 50% 30%, rgba(99, 102, 241, 0.1) 0%, transparent 60%)',
+          }}
+        />
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="relative w-full max-w-sm glass-card p-8 text-center space-y-6"
+        >
+          <div className="w-14 h-14 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center mx-auto shadow-glow-primary">
+            <CheckCircle2 size={28} />
+          </div>
+          <div>
+            <h2 className="text-xl font-display font-bold text-white mb-1">
+              Already Signed In
+            </h2>
+            <p className="text-surface-400 text-sm">
+              Logged in as <span className="text-white font-medium">{displayName}</span>
+            </p>
+          </div>
+          <div className="space-y-3 pt-2">
+            <Button
+              variant="primary"
+              size="lg"
+              fullWidth
+              onClick={() => navigate(isAdmin ? ROUTES.ADMIN : ROUTES.VOTE)}
+              iconRight={<ArrowRight size={16} />}
+            >
+              {isAdmin ? 'Go to Admin Dashboard' : 'Continue to Voting'}
+            </Button>
+            <Button
+              variant="outline"
+              size="md"
+              fullWidth
+              onClick={async () => {
+                await signOut();
+                setFullName('');
+              }}
+              icon={<LogOut size={16} />}
+            >
+              Sign In as Different Person
+            </Button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-[100dvh] flex items-center justify-center px-4 py-8 relative">
+      <ParticleBackground count={15} />
+
+      {/* Background gradient */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            'radial-gradient(ellipse 60% 50% at 50% 30%, rgba(99, 102, 241, 0.1) 0%, transparent 60%)',
+        }}
+      />
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+        className="relative w-full max-w-sm"
+      >
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <Link to={ROUTES.HOME} className="inline-block">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center mx-auto mb-4 shadow-glow-primary">
+              <Award size={28} className="text-white" />
+            </div>
+          </Link>
+          <h1 className="font-display text-2xl font-bold text-white">
+            {isAdminMode ? 'Admin Access' : 'Enter Your Name'}
+          </h1>
+          <p className="text-sm text-surface-400 mt-1">
+            {isAdminMode
+              ? 'Sign in with administrator credentials'
+              : `Welcome to ${APP_NAME} ${APP_YEAR}`}
+          </p>
+        </div>
+
+        {/* Form */}
+        {!isAdminMode ? (
+          /* Name Only Student Form */
+          <form onSubmit={handleStudentSubmit} className="glass-card p-6 space-y-5">
+            <Input
+              label="Your Full Name"
+              placeholder="e.g. Rahul Sharma"
+              value={fullName}
+              onChange={(e) => {
+                setFullName(e.target.value);
+                setError('');
+              }}
+              error={error}
+              icon={<User size={18} />}
+              autoComplete="name"
+              autoFocus
+            />
+
+            <Button
+              type="submit"
+              variant="primary"
+              fullWidth
+              isLoading={isLoading}
+              size="lg"
+              iconRight={!isLoading ? <ArrowRight size={16} /> : undefined}
+            >
+              Start Voting
+            </Button>
+          </form>
+        ) : (
+          /* Admin Email/Password Form */
+          <form onSubmit={handleAdminSubmit} className="glass-card p-6 space-y-4">
+            <Input
+              label="Admin Email"
+              type="email"
+              placeholder="admin@college.edu"
+              value={adminEmail}
+              onChange={(e) => setAdminEmail(e.target.value)}
+              icon={<Mail size={16} />}
+              autoComplete="email"
+            />
+
+            <Input
+              label="Admin Password"
+              type="password"
+              placeholder="••••••••"
+              value={adminPassword}
+              onChange={(e) => setAdminPassword(e.target.value)}
+              icon={<Lock size={16} />}
+              autoComplete="current-password"
+            />
+
+            {error && <p className="text-xs text-rose-400 mt-1">{error}</p>}
+
+            <Button
+              type="submit"
+              variant="gold"
+              fullWidth
+              isLoading={isLoading}
+              size="lg"
+              iconRight={<Shield size={16} />}
+            >
+              Admin Sign In
+            </Button>
+          </form>
+        )}
+
+        {/* Toggle Student / Admin */}
+        <p className="text-center text-xs text-surface-400 mt-6">
+          {!isAdminMode ? (
+            <button
+              onClick={() => {
+                setIsAdminMode(true);
+                setError('');
+              }}
+              className="text-surface-400 hover:text-white flex items-center justify-center gap-1 mx-auto transition-colors"
+            >
+              <Shield size={12} />
+              Admin Portal Login
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                setIsAdminMode(false);
+                setError('');
+              }}
+              className="text-primary-400 hover:text-primary-300 font-semibold transition-colors"
+            >
+              ← Back to Student Name Login
+            </button>
+          )}
+        </p>
+      </motion.div>
+    </div>
+  );
+}

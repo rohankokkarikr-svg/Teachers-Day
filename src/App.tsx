@@ -8,6 +8,7 @@ import AdminHeader from './components/layout/AdminHeader';
 import ToastContainer from './components/ui/Toast';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/layout/ProtectedRoute';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 // Eagerly loaded pages (critical path)
 import HomePage from './pages/student/HomePage';
@@ -162,6 +163,7 @@ export default function App() {
         />
       </Routes>
     </BrowserRouter>
+    <SpeedInsights />
     </AuthProvider>
   );
 }

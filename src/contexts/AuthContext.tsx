@@ -142,7 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!isSupabaseConfigured) {
       return {
         success: false,
-        error: 'Invalid admin password. Please enter the correct admin passcode (767614).',
+        error: 'Invalid admin passcode. Please try again.',
       };
     }
 
@@ -155,14 +155,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (error) {
         return {
           success: false,
-          error: 'Invalid admin credentials. Please enter the correct password (767614).',
+          error: 'Invalid admin credentials. Please try again.',
         };
       }
       return { success: true };
     } catch {
       return {
         success: false,
-        error: 'Invalid admin credentials. Please enter the correct password (767614).',
+        error: 'Invalid admin credentials. Please try again.',
       };
     }
   };

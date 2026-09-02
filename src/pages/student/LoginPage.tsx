@@ -63,7 +63,7 @@ export default function LoginPage() {
     setError('');
 
     if (!adminPassword) {
-      setError('Please enter the admin password (767614)');
+      setError('Please enter the admin passcode');
       return;
     }
 
@@ -210,9 +210,9 @@ export default function LoginPage() {
           /* Admin Passcode Form */
           <form onSubmit={handleAdminSubmit} className="glass-card p-6 space-y-4">
             <Input
-              label="Admin Passcode / Password"
+              label="Admin Passcode"
               type="password"
-              placeholder="Enter passcode (767614)"
+              placeholder="••••••••"
               value={adminPassword}
               onChange={(e) => {
                 setAdminPassword(e.target.value);

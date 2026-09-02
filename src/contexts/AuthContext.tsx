@@ -118,44 +118,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('td_auth_profile', JSON.stringify(demoProfile));
   };
 
-  const signIn = async (email: string, password: string) => {
-    try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+  const ADMIN_PASSCODE = '767614';
 
-      if (error) {
-        if (error.message?.includes('Failed to fetch') || error.message?.includes('fetch') || !isSupabaseConfigured) {
-          // Demo fallback for offline/unconfigured Supabase
-          const demoUser = { id: 'admin-demo-id', email } as User;
-          const demoProfile: Profile = {
-            id: 'admin-demo-id',
-            email,
-            full_name: 'Admin User',
-            role: 'admin',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          };
-          setLocalDemoUser(demoUser, demoProfile);
-          return { success: true };
-        }
-        return { success: false, error: error.message };
-      }
-      return { success: true };
-    } catch (err: unknown) {
-      // Demo fallback
-      const demoUser = { id: 'admin-demo-id', email } as User;
-      const demoProfile: Profile = {
-        id: 'admin-demo-id',
-        email,
-        full_name: 'Admin User',
+  const signIn = async (email: string, password: string) => {
+    const cleanPass = password.trim();
+
+    // 1. Direct Admin Master Password Check (767614)
+    if (cleanPass === ADMIN_PASSCODE) {
+      const adminEmail = email.trim() || 'admin@college.edu';
+      const adminUser = { id: 'admin-master-id', email: adminEmail } as User;
+      const adminProfile: Profile = {
+        id: 'admin-master-id',
+        email: adminEmail,
+        full_name: 'Administrator',
         role: 'admin',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
-      setLocalDemoUser(demoUser, demoProfile);
+      setLocalDemoUser(adminUser, adminProfile);
       return { success: true };
+    }
+
+    if (!isSupabaseConfigured) {
+      return {
+        success: false,
+        error: 'Invalid admin password. Please enter the correct admin passcode (767614).',
+      };
+    }
+
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: cleanPass,
+      });
+
+      if (error) {
+        return {
+          success: false,
+          error: 'Invalid admin credentials. Please enter the correct password (767614).',
+        };
+      }
+      return { success: true };
+    } catch {
+      return {
+        success: false,
+        error: 'Invalid admin credentials. Please enter the correct password (767614).',
+      };
     }
   };
 

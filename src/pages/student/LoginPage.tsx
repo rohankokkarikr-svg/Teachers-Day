@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Award, User, ArrowRight, Shield, Mail, Lock, CheckCircle2, LogOut } from 'lucide-react';
+import { Award, User, ArrowRight, Shield, Lock, CheckCircle2, LogOut } from 'lucide-react';
 import { APP_NAME, APP_YEAR, ROUTES } from '../../lib/constants';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
@@ -12,7 +12,6 @@ import { useAuth } from '../../hooks/useAuth';
 export default function LoginPage() {
   const [fullName, setFullName] = useState('');
   const [isAdminMode, setIsAdminMode] = useState(false);
-  const [adminEmail, setAdminEmail] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -63,14 +62,14 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
 
-    if (!adminEmail || !adminPassword) {
-      setError('Admin email and password are required');
+    if (!adminPassword) {
+      setError('Please enter the admin password (767614)');
       return;
     }
 
     setIsLoading(true);
     try {
-      const result = await signIn(adminEmail, adminPassword);
+      const result = await signIn('admin@college.edu', adminPassword);
       if (result.success) {
         toast.success('Admin Authenticated!', 'Welcome to Admin Dashboard.');
         navigate(ROUTES.ADMIN);
@@ -208,26 +207,20 @@ export default function LoginPage() {
             </Button>
           </form>
         ) : (
-          /* Admin Email/Password Form */
+          /* Admin Passcode Form */
           <form onSubmit={handleAdminSubmit} className="glass-card p-6 space-y-4">
             <Input
-              label="Admin Email"
-              type="email"
-              placeholder="admin@college.edu"
-              value={adminEmail}
-              onChange={(e) => setAdminEmail(e.target.value)}
-              icon={<Mail size={16} />}
-              autoComplete="email"
-            />
-
-            <Input
-              label="Admin Password"
+              label="Admin Passcode / Password"
               type="password"
-              placeholder="••••••••"
+              placeholder="Enter passcode (767614)"
               value={adminPassword}
-              onChange={(e) => setAdminPassword(e.target.value)}
+              onChange={(e) => {
+                setAdminPassword(e.target.value);
+                setError('');
+              }}
               icon={<Lock size={16} />}
               autoComplete="current-password"
+              autoFocus
             />
 
             {error && <p className="text-xs text-rose-400 mt-1">{error}</p>}

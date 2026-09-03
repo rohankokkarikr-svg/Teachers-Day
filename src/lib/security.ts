@@ -62,7 +62,7 @@ export function initSecurityShield() {
   window.addEventListener(
     'keydown',
     (e: KeyboardEvent) => {
-      const key = e.key.toUpperCase();
+      const key = e.key ? e.key.toUpperCase() : '';
       const ctrlOrCmd = e.ctrlKey || e.metaKey;
       const shift = e.shiftKey;
       const alt = e.altKey;

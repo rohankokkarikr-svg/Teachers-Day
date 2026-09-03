@@ -13,6 +13,12 @@ const navItems = [
 export default function MobileBottomNavigation() {
   const location = useLocation();
 
+  // Hide on Category Voting page where dedicated voting action bar is shown
+  const isCategoryVotePage = location.pathname.startsWith('/vote/') && location.pathname !== '/vote';
+  if (isCategoryVotePage) {
+    return null;
+  }
+
   const isActive = (path: string) => {
     if (path === ROUTES.HOME) return location.pathname === '/';
     return location.pathname.startsWith(path);

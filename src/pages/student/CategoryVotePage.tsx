@@ -77,9 +77,10 @@ export default function CategoryVotePage() {
   };
 
   const isLoading = loadingTeachers || loadingVoting;
+  const showActionBar = !isLoading && teachers.length > 0 && !hasVoted;
 
   return (
-    <div className="page-container max-w-2xl mx-auto pb-36">
+    <div className={`page-container max-w-2xl mx-auto ${showActionBar ? 'pb-32' : 'pb-12'}`}>
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
@@ -287,9 +288,9 @@ export default function CategoryVotePage() {
       )}
 
       {/* Sticky Bottom Action Bar */}
-      {!hasVoted && (
+      {showActionBar && (
         <motion.div
-          className="fixed bottom-0 left-0 right-0 z-30 md:bottom-0"
+          className="fixed bottom-0 left-0 right-0 z-30"
           initial={{ y: 100 }}
           animate={{ y: 0 }}
           transition={{ delay: 0.3, type: 'spring', stiffness: 300, damping: 30 }}

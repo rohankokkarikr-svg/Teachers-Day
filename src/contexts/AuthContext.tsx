@@ -174,6 +174,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const deviceId = getOrCreateDeviceId();
+    const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
+    const email = `${slug}@student.college`;
+    const studentId = `student-${slug}-${Date.now()}`;
+
+    const studentUser = {
+      id: studentId,
+      email,
+      user_metadata: { full_name: cleanName, role: 'student', device_id: deviceId },
+    } as unknown as User;
+
+    const studentProfile: Profile = {
+      id: studentId,
+      email,
+      full_name: cleanName,
+      role: 'student',
+      device_id: deviceId,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    setLocalDemoUser(studentUser, studentProfile);
 
     // Track registered student locally
     try {
@@ -187,97 +208,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Ignore
     }
 
-    const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
-    const email = `${slug}@student.college`;
-    const password = `${slug}.vote2026!`;
-
-    if (!isSupabaseConfigured) {
-      // Offline/Local Demo fallback
-      const demoId = `demo-${slug}`;
-      const demoUser = { id: demoId, email } as User;
-      const demoProfile: Profile = {
-        id: demoId,
-        email,
-        full_name: cleanName,
-        role: 'student',
-        device_id: deviceId,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      setLocalDemoUser(demoUser, demoProfile);
-      return { success: true };
-    }
-
-    try {
-      // 1. Try signing in
-      const { error: signInErr } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (!signInErr) {
-        return { success: true };
-      }
-
-      // 2. If user doesn't exist, create account automatically
-      const { error: signUpErr } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            full_name: cleanName,
-            role: 'student',
-            device_id: deviceId,
-          },
-        },
-      });
-
-      if (signUpErr) {
-        if (signUpErr.message?.includes('Failed to fetch') || signUpErr.message?.includes('fetch')) {
-          const demoId = `demo-${slug}`;
-          const demoUser = { id: demoId, email } as User;
-          const demoProfile: Profile = {
-            id: demoId,
-            email,
-            full_name: cleanName,
-            role: 'student',
-            device_id: deviceId,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          };
-          setLocalDemoUser(demoUser, demoProfile);
-          return { success: true };
-        }
-        return { success: false, error: signUpErr.message };
-      }
-
-      // 3. Log in after account creation
-      const { error: secondSignInErr } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (secondSignInErr) {
-        return { success: false, error: secondSignInErr.message };
-      }
-
-      return { success: true };
-    } catch {
-      // Fallback on network/fetch error
-      const demoId = `demo-${slug}`;
-      const demoUser = { id: demoId, email } as User;
-      const demoProfile: Profile = {
-        id: demoId,
-        email,
-        full_name: cleanName,
-        role: 'student',
-        device_id: deviceId,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      setLocalDemoUser(demoUser, demoProfile);
-      return { success: true };
-    }
+    return { success: true };
   };
 
   const signUp = async (email: string, password: string, fullName: string) => {

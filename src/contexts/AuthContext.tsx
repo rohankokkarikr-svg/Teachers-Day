@@ -223,10 +223,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
     const email = `${slug}@student.college`;
     
-    // Generate valid UUID for student profile
-    const studentId = typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
+    // 4. Retrieve existing student ID to avoid duplicate row creation
+    let studentId: string | null = null;
+
+    if (isSupabaseConfigured) {
+      try {
+        const { data: existingProfile } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('email', email)
+          .maybeSingle();
+
+        if (existingProfile?.id) {
+          studentId = existingProfile.id;
+        }
+      } catch {
+        // Fallback to local
+      }
+    }
+
+    if (!studentId) {
+      const storedId = localStorage.getItem(`td_student_id_${slug}`);
+      if (storedId) {
+        studentId = storedId;
+      } else {
+        studentId = typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
+        localStorage.setItem(`td_student_id_${slug}`, studentId);
+      }
+    }
 
     const studentUser = {
       id: studentId,
@@ -258,7 +284,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Ignore
     }
 
-    // Save profile to Supabase database
+    // Save/Update profile to Supabase database (idempotent upsert)
     if (isSupabaseConfigured) {
       try {
         await supabase.from('profiles').upsert(

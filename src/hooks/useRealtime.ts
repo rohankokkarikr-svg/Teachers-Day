@@ -81,19 +81,30 @@ export function useRealtime(categoryId?: string) {
         .from('voting_settings')
         .select('show_live_counts')
         .eq('id', 1)
-        .single();
+        .maybeSingle();
 
-      // 2. Fetch leaderboard via RPC
-      const leaderboardPromise = supabase.rpc('get_category_leaderboard', {
-        p_category_id: categoryId,
-      });
+      // 2. Fetch category teachers and vote totals directly
+      const teachersPromise = supabase
+        .from('teachers')
+        .select('*')
+        .eq('is_active', true);
+
+      const ctPromise = supabase
+        .from('category_teachers')
+        .select('teacher_id')
+        .eq('category_id', categoryId);
+
+      const totalsPromise = supabase
+        .from('vote_totals')
+        .select('teacher_id, total_votes')
+        .eq('category_id', categoryId);
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Leaderboard fetch timeout')), 2500)
+        setTimeout(() => reject(new Error('Leaderboard fetch timeout')), 3000)
       );
 
-      const [settingsRes, rpcRes] = (await Promise.race([
-        Promise.all([settingsPromise, leaderboardPromise]),
+      const [settingsRes, teachersRes, ctRes, totalsRes] = (await Promise.race([
+        Promise.all([settingsPromise, teachersPromise, ctPromise, totalsPromise]),
         timeoutPromise,
       ])) as any;
 
@@ -101,21 +112,30 @@ export function useRealtime(categoryId?: string) {
         setShowLiveCounts(settingsRes.data.show_live_counts);
       }
 
-      if (rpcRes?.error) throw rpcRes.error;
+      const allTeachers: any[] = teachersRes?.data || [];
+      const assignedIds = new Set<string>((ctRes?.data || []).map((ct: any) => ct.teacher_id));
+      const categoryTeachers = assignedIds.size > 0
+        ? allTeachers.filter((t) => assignedIds.has(t.id))
+        : allTeachers;
 
-      if (rpcRes?.data && rpcRes.data.length > 0) {
-        const formatted: LeaderboardEntry[] = rpcRes.data.map((row: any) => ({
-          teacher_id: row.teacher_id,
-          teacher_name: row.teacher_name,
-          teacher_photo: row.teacher_photo,
-          teacher_department: row.department,
-          total_votes: row.total_votes,
-          rank: Number(row.rank),
-        }));
-        setLeaderboard(formatted);
-      } else {
-        setLeaderboard(getCategoryFallbackLeaderboard(categoryId));
-      }
+      const votesMap: Record<string, number> = {};
+      (totalsRes?.data || []).forEach((row: any) => {
+        votesMap[row.teacher_id] = row.total_votes;
+      });
+
+      const entries: LeaderboardEntry[] = categoryTeachers.map((t) => ({
+        teacher_id: t.id,
+        teacher_name: t.name,
+        teacher_photo: t.photo_url || '',
+        teacher_department: t.department,
+        total_votes: votesMap[t.id] ?? 0,
+        rank: 1,
+      }));
+
+      entries.sort((a, b) => b.total_votes - a.total_votes || a.teacher_name.localeCompare(b.teacher_name));
+
+      const ranked = entries.map((entry, idx) => ({ ...entry, rank: idx + 1 }));
+      setLeaderboard(ranked);
     } catch {
       setLeaderboard(getCategoryFallbackLeaderboard(categoryId));
     } finally {

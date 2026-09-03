@@ -4,7 +4,7 @@ import { getLocalStorage, setLocalStorage, exportToCSV } from '../lib/utils';
 import { clearDeviceBindingsAndVotes } from '../lib/deviceId';
 import { INITIAL_TEACHERS_DATA } from '../data/initialTeachers';
 import { INITIAL_CATEGORIES_DATA } from '../data/initialCategories';
-import type { Teacher, Category, VotingSettings, AdminAction } from '../types';
+import type { Teacher, Category, VotingSettings, AdminAction, Profile } from '../types';
 
 export interface SystemStats {
   totalStudents: number;
@@ -42,9 +42,15 @@ export function useAdmin() {
 
   // Helper to log admin action locally and to DB
   const logAction = async (action: string, details?: Record<string, unknown>) => {
+    const adminProfile = getLocalStorage<Profile | null>('td_auth_profile', null);
+    const adminId =
+      adminProfile?.id && adminProfile.id.length === 36
+        ? adminProfile.id
+        : 'a0000000-0000-0000-0000-000000000001';
+
     const newAction: AdminAction = {
       id: 'act-' + Date.now(),
-      admin_id: 'admin-user',
+      admin_id: adminId,
       action,
       details,
       created_at: new Date().toISOString(),
@@ -57,16 +63,29 @@ export function useAdmin() {
 
     if (isSupabaseConfigured) {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          await supabase.from('admin_actions').insert({
-            admin_id: user.id,
-            action,
-            details,
-          });
+        // Ensure admin profile exists in DB
+        await supabase.from('profiles').upsert(
+          {
+            id: adminId,
+            email: adminProfile?.email || 'admin@college.edu',
+            full_name: adminProfile?.full_name || 'Administrator',
+            role: 'admin',
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        );
+
+        const { data, error: insertErr } = await supabase.from('admin_actions').insert({
+          admin_id: adminId,
+          action,
+          details: details || null,
+        }).select().single();
+
+        if (!insertErr && data) {
+          newAction.id = data.id;
         }
-      } catch {
-        // Non-critical audit logging error
+      } catch (err) {
+        console.error('Failed to log admin action to Supabase:', err);
       }
     }
   };
@@ -660,5 +679,6 @@ export function useAdmin() {
     deleteCategory,
     exportResultsCSV,
     masterResetSystem,
+    logAction,
   };
 }

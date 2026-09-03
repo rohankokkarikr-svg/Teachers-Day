@@ -130,9 +130,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // 1. Direct Admin Master Password Check (767614)
     if (cleanPass === ADMIN_PASSCODE) {
       const adminEmail = email.trim() || 'admin@college.edu';
-      const adminUser = { id: 'admin-master-id', email: adminEmail } as User;
+      const adminId = 'a0000000-0000-0000-0000-000000000001';
+      const adminUser = { id: adminId, email: adminEmail } as User;
       const adminProfile: Profile = {
-        id: 'admin-master-id',
+        id: adminId,
         email: adminEmail,
         full_name: 'Administrator',
         role: 'admin',
@@ -140,6 +141,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         updated_at: new Date().toISOString(),
       };
       setLocalDemoUser(adminUser, adminProfile);
+
+      if (isSupabaseConfigured) {
+        try {
+          await supabase.from('profiles').upsert(
+            {
+              id: adminId,
+              email: adminEmail,
+              full_name: 'Administrator',
+              role: 'admin',
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'id' }
+          );
+        } catch {
+          // Handled gracefully
+        }
+      }
+
       return { success: true };
     }
 

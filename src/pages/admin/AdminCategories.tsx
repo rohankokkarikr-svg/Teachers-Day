@@ -49,7 +49,7 @@ export default function AdminCategories() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const { saveCategory, deleteCategory } = useAdmin();
+  const { saveCategory, deleteCategory, logAction } = useAdmin();
 
   // Form State
   const [name, setName] = useState('');
@@ -300,6 +300,7 @@ export default function AdminCategories() {
       try {
         const records = allIds.map((tId) => ({ category_id: assignCategory.id, teacher_id: tId }));
         await supabase.from('category_teachers').upsert(records, { onConflict: 'category_id,teacher_id' });
+        await logAction('Assigned All Teachers to Category', { category: assignCategory.name, count: allIds.length });
       } catch {
         // Handled locally
       }
@@ -315,6 +316,7 @@ export default function AdminCategories() {
     if (isSupabaseConfigured) {
       try {
         await supabase.from('category_teachers').delete().eq('category_id', assignCategory.id);
+        await logAction('Cleared Nominees for Category', { category: assignCategory.name });
       } catch {
         // Handled locally
       }
@@ -334,6 +336,7 @@ export default function AdminCategories() {
       try {
         const records = filtered.map((t) => ({ category_id: assignCategory.id, teacher_id: t.id }));
         await supabase.from('category_teachers').upsert(records, { onConflict: 'category_id,teacher_id' });
+        await logAction('Assigned Filtered Teachers to Category', { category: assignCategory.name, count: filtered.length });
       } catch {
         // Handled locally
       }

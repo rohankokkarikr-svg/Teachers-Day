@@ -8,10 +8,12 @@ import ConfirmationModal from '../../components/ui/ConfirmationModal';
 import LoadingSkeleton from '../../components/ui/LoadingSkeleton';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { getLocalStorage, setLocalStorage } from '../../lib/utils';
+import { useAdmin } from '../../hooks/useAdmin';
 import { toast } from '../../components/ui/Toast';
 import type { AppreciationMessage, MessageStatus } from '../../types';
 
 export default function AdminAppreciation() {
+  const { logAction } = useAdmin();
   const [messages, setMessages] = useState<AppreciationMessage[]>(() => getLocalStorage<AppreciationMessage[]>('td_admin_messages', []));
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
@@ -76,6 +78,7 @@ export default function AdminAppreciation() {
     setLocalStorage('td_admin_messages', updated);
     window.dispatchEvent(new Event('td_appreciation_updated'));
     toast.success(`Message marked as ${newStatus}`);
+    await logAction(`Appreciation Message Status Updated to ${newStatus}`);
 
     if (isSupabaseConfigured) {
       try {
@@ -95,6 +98,7 @@ export default function AdminAppreciation() {
     setLocalStorage('td_admin_messages', updated);
     window.dispatchEvent(new Event('td_appreciation_updated'));
     toast.warning('Message Deleted');
+    await logAction('Appreciation Message Deleted');
 
     if (isSupabaseConfigured) {
       try {
@@ -113,6 +117,7 @@ export default function AdminAppreciation() {
     setMessages([]);
     setLocalStorage('td_admin_messages', []);
     window.dispatchEvent(new Event('td_appreciation_updated'));
+    await logAction('Cleared All Appreciation Messages');
 
     if (isSupabaseConfigured) {
       try {

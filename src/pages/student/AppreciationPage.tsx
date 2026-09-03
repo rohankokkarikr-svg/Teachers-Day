@@ -43,7 +43,7 @@ export default function AppreciationPage() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      if (data && data.length > 0) {
+      if (data) {
         setMessages(data as AppreciationMessage[]);
         setLocalStorage('td_admin_messages', data);
       }

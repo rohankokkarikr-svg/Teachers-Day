@@ -176,10 +176,10 @@ export default function AdminSettings() {
             </p>
             <ul className="list-disc list-inside space-y-1 text-surface-200">
               <li>All votes cast across every award category</li>
-              <li>All user voting ballots and device submission logs</li>
-              <li>All appreciation wall notes and moderation records</li>
-              <li>All student participation and voter tallies</li>
-              <li>Database tables in Supabase (vote_entries, vote_submissions, vote_totals, appreciation_messages)</li>
+              <li>All student ballots, device locks, and voter registration records</li>
+              <li>All appreciation wall notes and moderation logs</li>
+              <li>All dashboard tallies and real-time activity streams</li>
+              <li>Database tables in Supabase (vote_items, vote_submissions, vote_totals, appreciation_messages, student profiles, admin_actions)</li>
             </ul>
           </div>
 

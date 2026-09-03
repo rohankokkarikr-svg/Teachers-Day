@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getLocalStorage, setLocalStorage, exportToCSV } from '../lib/utils';
+import { clearDeviceBindingsAndVotes } from '../lib/deviceId';
 import type { Teacher, Category, VotingSettings, AdminAction } from '../types';
 
 export interface SystemStats {
@@ -173,12 +174,16 @@ export function useAdmin() {
         setLocalStorage('td_admin_settings', settingsRes.data);
       }
 
-      const totalStudents = Math.max(studentRes?.count ?? 0, totalRegistered);
+      const totalStudents = studentRes?.count !== undefined && studentRes?.count !== null
+        ? studentRes.count
+        : totalRegistered;
       const uniqueStudents = new Set((subRes?.data || []).map((s: any) => s.student_id));
-      const totalParticipants = Math.max(uniqueStudents.size, uniqueVoters);
+      const totalParticipants = subRes?.data ? uniqueStudents.size : uniqueVoters;
       const cloudRate = totalStudents > 0 ? Math.min(100, Math.round((totalParticipants / totalStudents) * 100)) : 0;
       const totalCategories = catRes?.count || allCats.length || 7;
-      const totalVotes = (totalsRes?.data || []).reduce((sum: number, item: any) => sum + (item.total_votes || 0), 0) || localTotalVotes;
+      const totalVotes = totalsRes?.data
+        ? (totalsRes.data as any[]).reduce((sum: number, item: any) => sum + (item.total_votes || 0), 0)
+        : localTotalVotes;
 
       const liveStats: SystemStats = {
         totalStudents,
@@ -534,22 +539,78 @@ export function useAdmin() {
   // Master Factory Reset: Wipes all votes, submissions, audit logs, messages, voter tallies across client and database
   const masterResetSystem = async (): Promise<{ success: boolean; error?: string }> => {
     try {
-      // 1. Wipe local votes & submissions
+      // 1. Wipe database tables if Supabase configured
+      if (isSupabaseConfigured) {
+        try {
+          // Delete all detailed vote items
+          await supabase.from('vote_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+          // Delete all vote submissions
+          await supabase.from('vote_submissions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+          // Delete all materialized vote totals
+          await supabase.from('vote_totals').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+          // Delete all appreciation messages
+          await supabase.from('appreciation_messages').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+          // Delete all admin audit actions
+          await supabase.from('admin_actions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+          // Delete student profiles so registered student accounts are completely reset
+          await supabase.from('profiles').delete().eq('role', 'student');
+          // Clear device_id from any remaining profiles
+          await supabase.from('profiles').update({ device_id: null }).neq('id', '00000000-0000-0000-0000-000000000000');
+          // Reset voting settings to default
+          await supabase.from('voting_settings').upsert({
+            id: 1,
+            is_voting_open: true,
+            show_live_counts: true,
+            results_finalized: false,
+            scheduled_start: null,
+            scheduled_end: null,
+            votes_per_category: 5,
+            updated_at: new Date().toISOString(),
+          });
+        } catch (dbErr) {
+          console.error('Database reset error:', dbErr);
+        }
+      }
+
+      // 2. Wipe local votes, submissions, student registrations & device bindings
       setLocalStorage('td_category_vote_totals', {});
       setLocalStorage('td_admin_messages', []);
       setLocalStorage('td_registered_students', []);
       setLocalStorage('td_device_audit_log', []);
       setLocalStorage('td_admin_actions', []);
+      setLocalStorage('td_recent_vote_activity', []);
+      clearDeviceBindingsAndVotes();
 
-      // Remove all user ballot keys
+      // Remove all user ballot keys, draft keys, student id keys, device vote keys
       const keysToRemove: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
-        if (key && (key.startsWith('td_submitted_categories') || key.startsWith('td_votes_'))) {
+        if (
+          key &&
+          (key.startsWith('td_submitted_categories') ||
+            key.startsWith('td_device_voted_categories') ||
+            key.startsWith('td_draft_votes') ||
+            key.startsWith('td_votes_') ||
+            key.startsWith('td_student_id_'))
+        ) {
           keysToRemove.push(key);
         }
       }
       keysToRemove.forEach((k) => localStorage.removeItem(k));
+
+      // If a student user was logged in on this client, clear their session so they start fresh
+      try {
+        const savedProfileStr = localStorage.getItem('td_auth_profile');
+        if (savedProfileStr) {
+          const savedProfile = JSON.parse(savedProfileStr);
+          if (savedProfile?.role === 'student') {
+            localStorage.removeItem('td_auth_user');
+            localStorage.removeItem('td_auth_profile');
+          }
+        }
+      } catch {
+        // Ignore
+      }
 
       // Reset settings and stats
       const freshSettings: VotingSettings = {
@@ -557,6 +618,9 @@ export function useAdmin() {
         is_voting_open: true,
         show_live_counts: true,
         results_finalized: false,
+        scheduled_start: undefined,
+        scheduled_end: undefined,
+        votes_per_category: 5,
         updated_at: new Date().toISOString(),
       };
       setSettings(freshSettings);
@@ -574,31 +638,13 @@ export function useAdmin() {
       setLocalStorage('td_admin_stats', freshStats);
       setRecentActions([]);
 
-      // 2. Wipe database tables if Supabase configured
-      if (isSupabaseConfigured) {
-        try {
-          await supabase.from('vote_entries').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          await supabase.from('vote_submissions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          await supabase.from('vote_totals').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          await supabase.from('appreciation_messages').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          await supabase.from('admin_actions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          await supabase.from('voting_settings').update({
-            is_voting_open: true,
-            show_live_counts: true,
-            results_finalized: false,
-            updated_at: new Date().toISOString(),
-          }).eq('id', 1);
-        } catch {
-          // Handled locally
-        }
-      }
-
       // 3. Dispatch global sync events
       window.dispatchEvent(new Event('td_votes_updated'));
       window.dispatchEvent(new Event('td_appreciation_updated'));
       window.dispatchEvent(new Event('td_admin_settings_updated'));
       window.dispatchEvent(new Event('td_admin_teachers_updated'));
       window.dispatchEvent(new Event('td_admin_categories_updated'));
+      window.dispatchEvent(new Event('td_live_activity_updated'));
       window.dispatchEvent(new Event('storage'));
 
       return { success: true };

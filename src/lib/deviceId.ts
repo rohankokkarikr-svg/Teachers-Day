@@ -182,3 +182,21 @@ export function hasUserVotedInCategory(categoryId: string, userId?: string): boo
   return voted.includes(categoryId);
 }
 
+/**
+ * Clears all local device bindings, cookies, voter histories and ballots
+ */
+export function clearDeviceBindingsAndVotes(): void {
+  try {
+    localStorage.removeItem(DEVICE_BOUND_STUDENT_KEY);
+    localStorage.removeItem(DEVICE_ID_KEY);
+    localStorage.removeItem('td_device_audit_log');
+
+    // Clear all cookies
+    document.cookie = `${DEVICE_BOUND_STUDENT_KEY}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=Lax`;
+    document.cookie = `${DEVICE_ID_KEY}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=Lax`;
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+

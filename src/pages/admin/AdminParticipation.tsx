@@ -134,12 +134,14 @@ export default function AdminParticipation() {
         timeoutPromise,
       ])) as any;
 
-      const sTotal = Math.max(studentRes?.count ?? 0, distinctRegisteredCount);
+      const sTotal = studentRes?.count !== undefined && studentRes?.count !== null
+        ? studentRes.count
+        : distinctRegisteredCount;
       setTotalStudents(sTotal);
 
       const submissions = subRes?.data || [];
       const cloudUniqueSet = new Set(submissions.map((s: any) => s.student_id));
-      const totalUnique = Math.max(cloudUniqueSet.size, distinctVotersCount);
+      const totalUnique = subRes?.data ? cloudUniqueSet.size : distinctVotersCount;
       setUniqueParticipants(totalUnique);
 
       const cloudCategoryCounts: Record<string, number> = { ...categorySubmissions };

@@ -2,12 +2,13 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getLocalStorage, setLocalStorage } from '../lib/utils';
 import { INITIAL_TEACHERS_DATA } from '../data/initialTeachers';
+import { INITIAL_CATEGORY_ASSIGNMENTS } from '../data/initialCategories';
 import type { Teacher } from '../types';
 
 export const INITIAL_FALLBACK_TEACHERS: Teacher[] = INITIAL_TEACHERS_DATA;
 
 /**
- * Gets all active teachers from storage or fallback (minimum 50+ teachers)
+ * Gets all active teachers from storage or fallback
  */
 export function getAllTeachers(): Teacher[] {
   return getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_FALLBACK_TEACHERS);
@@ -17,22 +18,29 @@ export function useTeachers(categoryId?: string) {
   const [teachers, setTeachers] = useState<Teacher[]>(() => {
     const all = getAllTeachers().filter((t) => t.is_active !== false);
     if (!categoryId) return all;
-    const assignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
+    const assignments = getLocalStorage<Record<string, string[]>>(
+      'td_category_teacher_assignments',
+      INITIAL_CATEGORY_ASSIGNMENTS
+    );
     const catAssigned = assignments[categoryId];
-    // If not customized yet, default to all active teachers
-    if (!catAssigned) return all;
-    const set = new Set(catAssigned);
-    return all.filter((t) => set.has(t.id));
+    if (catAssigned !== undefined) {
+      const set = new Set(catAssigned);
+      return all.filter((t) => set.has(t.id));
+    }
+    return all;
   });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fetchTeachers = useCallback(async () => {
     const localAll = getAllTeachers().filter((t) => t.is_active !== false);
-    const assignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
+    const assignments = getLocalStorage<Record<string, string[]>>(
+      'td_category_teacher_assignments',
+      INITIAL_CATEGORY_ASSIGNMENTS
+    );
     const catAssigned = categoryId ? assignments[categoryId] : undefined;
     const initialList = categoryId
-      ? catAssigned
+      ? catAssigned !== undefined
         ? localAll.filter((t) => new Set(catAssigned).has(t.id))
         : localAll
       : localAll;
@@ -63,26 +71,24 @@ export function useTeachers(categoryId?: string) {
 
       if (teachersRes.error) throw teachersRes.error;
 
-      if (teachersRes.data && teachersRes.data.length > 0) {
+      if (teachersRes.data) {
         setLocalStorage('td_admin_teachers', teachersRes.data);
         const liveAll = teachersRes.data.filter((t: Teacher) => t.is_active !== false);
 
         if (!categoryId) {
           setTeachers(liveAll);
         } else {
-          let assignedIds: string[] = [];
-          if (assignmentsRes?.data && assignmentsRes.data.length > 0) {
-            assignedIds = assignmentsRes.data.map((ct: any) => ct.teacher_id);
+          // If Supabase returned category assignment records (even if empty array)
+          if (assignmentsRes?.data !== null && assignmentsRes?.data !== undefined && !assignmentsRes.error) {
+            const assignedIds: string[] = assignmentsRes.data.map((ct: { teacher_id: string }) => ct.teacher_id);
             assignments[categoryId] = assignedIds;
             setLocalStorage('td_category_teacher_assignments', assignments);
             const liveSet = new Set(assignedIds);
             setTeachers(liveAll.filter((t: Teacher) => liveSet.has(t.id)));
-          } else if (assignments[categoryId]) {
-            assignedIds = assignments[categoryId];
-            const liveSet = new Set(assignedIds);
+          } else if (assignments[categoryId] !== undefined) {
+            const liveSet = new Set(assignments[categoryId]);
             setTeachers(liveAll.filter((t: Teacher) => liveSet.has(t.id)));
           } else {
-            // Default to all active teachers if no category-specific restriction
             setTeachers(liveAll);
           }
         }

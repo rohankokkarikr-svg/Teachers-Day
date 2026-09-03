@@ -3,6 +3,7 @@ import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getLocalStorage, setLocalStorage, exportToCSV } from '../lib/utils';
 import { clearDeviceBindingsAndVotes } from '../lib/deviceId';
 import { INITIAL_TEACHERS_DATA } from '../data/initialTeachers';
+import { INITIAL_CATEGORIES_DATA } from '../data/initialCategories';
 import type { Teacher, Category, VotingSettings, AdminAction } from '../types';
 
 export interface SystemStats {
@@ -370,12 +371,6 @@ export function useAdmin() {
             updatedList[idx] = data as Teacher;
             setLocalStorage('td_admin_teachers', updatedList);
           }
-          // Automatically assign new teacher to all categories
-          const { data: cats } = await supabase.from('categories').select('id');
-          if (cats && cats.length > 0) {
-            const ctRecords = cats.map(c => ({ category_id: c.id, teacher_id: data.id }));
-            await supabase.from('category_teachers').upsert(ctRecords, { onConflict: 'category_id,teacher_id' });
-          }
         }
       }
       return { success: true };
@@ -387,7 +382,7 @@ export function useAdmin() {
 
   // CRUD Category
   const saveCategory = async (category: Partial<Category>): Promise<{ success: boolean; error?: string }> => {
-    const categoryList = getLocalStorage<Category[]>('td_admin_categories', []);
+    const categoryList = getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES_DATA);
     const categoryId = category.id || `cat-${Date.now()}`;
     const fullCategory: Category = {
       id: categoryId,
@@ -441,12 +436,6 @@ export function useAdmin() {
           if (idx >= 0) {
             updatedList[idx] = data as Category;
             setLocalStorage('td_admin_categories', updatedList);
-          }
-          // Assign all active teachers to new category
-          const { data: teachers } = await supabase.from('teachers').select('id').eq('is_active', true);
-          if (teachers && teachers.length > 0) {
-            const ctRecords = teachers.map(t => ({ category_id: data.id, teacher_id: t.id }));
-            await supabase.from('category_teachers').upsert(ctRecords, { onConflict: 'category_id,teacher_id' });
           }
         }
       }

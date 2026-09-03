@@ -12,6 +12,7 @@ import LoadingSkeleton from '../../components/ui/LoadingSkeleton';
 import Badge from '../../components/ui/Badge';
 import { getInitials, getLocalStorage } from '../../lib/utils';
 import { useAuth } from '../../hooks/useAuth';
+import { useCategories } from '../../hooks/useCategories';
 import { useTeachers } from '../../hooks/useTeachers';
 import { useVoting } from '../../hooks/useVoting';
 import { toast } from '../../components/ui/Toast';
@@ -29,6 +30,8 @@ export default function CategoryVotePage() {
   const { categoryId = '' } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { categories } = useCategories(user?.id);
+  const currentCategory = categories.find((c) => c.id === categoryId);
   const { teachers, isLoading: loadingTeachers } = useTeachers(categoryId);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDept, setSelectedDept] = useState('ALL');
@@ -132,8 +135,9 @@ export default function CategoryVotePage() {
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 mb-1">
+              <span className="text-xl md:text-2xl">{currentCategory?.icon || '🏆'}</span>
               <h1 className="section-title text-xl md:text-2xl">
-                Award Category Voting
+                {currentCategory?.name || 'Award Category Voting'}
               </h1>
               {hasVoted && (
                 <Badge variant="success" icon={<CheckCircle2 size={12} />}>
@@ -142,7 +146,7 @@ export default function CategoryVotePage() {
               )}
             </div>
             <p className="section-subtitle text-xs md:text-sm">
-              Distribute your {VOTES_PER_CATEGORY} votes among candidate teachers below ({teachers.length} candidates)
+              {currentCategory?.description || `Distribute your ${VOTES_PER_CATEGORY} votes among candidate teachers below`} ({teachers.length} candidate{teachers.length !== 1 ? 's' : ''})
             </p>
           </div>
           <ProgressIndicator allocated={hasVoted ? VOTES_PER_CATEGORY : totalAllocated} size="md" />

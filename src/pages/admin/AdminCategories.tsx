@@ -23,21 +23,20 @@ import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useAdmin } from '../../hooks/useAdmin';
 import { toast } from '../../components/ui/Toast';
 import { INITIAL_TEACHERS_DATA } from '../../data/initialTeachers';
+import { INITIAL_CATEGORIES_DATA, INITIAL_CATEGORY_ASSIGNMENTS } from '../../data/initialCategories';
 import type { Category, Teacher } from '../../types';
 
-const INITIAL_CATEGORIES: Category[] = [
-  { id: '11111111-0000-0000-0000-000000000001', name: 'Most Inspiring Teacher', description: 'The teacher who lights the spark of curiosity and encourages students', icon: '✨', display_order: 1, is_active: true, created_at: '', updated_at: '' },
-  { id: '11111111-0000-0000-0000-000000000002', name: 'Best Explainer', description: 'Makes even the most complex algorithms, formulas, and theories crystal clear', icon: '💡', display_order: 2, is_active: true, created_at: '', updated_at: '' },
-  { id: '11111111-0000-0000-0000-000000000003', name: 'Most Supportive Teacher', description: 'Always available during office hours and goes out of their way to help', icon: '🤝', display_order: 3, is_active: true, created_at: '', updated_at: '' },
-  { id: '11111111-0000-0000-0000-000000000004', name: 'Best Motivator', description: 'Pushes you to achieve your absolute best and never lets you give up', icon: '🔥', display_order: 4, is_active: true, created_at: '', updated_at: '' },
-  { id: '11111111-0000-0000-0000-000000000005', name: 'Friendliest Teacher', description: 'Creates a warm, welcoming, and open environment in every lecture', icon: '😊', display_order: 5, is_active: true, created_at: '', updated_at: '' },
-  { id: '11111111-0000-0000-0000-000000000006', name: 'Most Energetic Teacher', description: 'Brings unmatched passion, enthusiasm, and energy to every single class', icon: '⚡', display_order: 6, is_active: true, created_at: '', updated_at: '' },
-  { id: '11111111-0000-0000-0000-000000000007', name: "Students' Favourite Teacher", description: 'The overall most beloved mentor of the college community', icon: '❤️', display_order: 7, is_active: true, created_at: '', updated_at: '' },
-];
-
 export default function AdminCategories() {
-  const [categories, setCategories] = useState<Category[]>(() => getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES));
-  const [teachers, setTeachers] = useState<Teacher[]>(() => getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA));
+  const [categories, setCategories] = useState<Category[]>(() =>
+    getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES_DATA)
+  );
+  const [teachers, setTeachers] = useState<Teacher[]>(() =>
+    getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA)
+  );
+  const [categoryAssignments, setCategoryAssignments] = useState<Record<string, string[]>>(() =>
+    getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', INITIAL_CATEGORY_ASSIGNMENTS)
+  );
+
   const [isLoading, setIsLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -60,10 +59,16 @@ export default function AdminCategories() {
   const [isActive, setIsActive] = useState(true);
 
   const fetchData = useCallback(async () => {
-    const localCats = getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES);
+    const localCats = getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES_DATA);
     const localTeachers = getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA);
+    const localAssignments = getLocalStorage<Record<string, string[]>>(
+      'td_category_teacher_assignments',
+      INITIAL_CATEGORY_ASSIGNMENTS
+    );
+
     setCategories(localCats);
     setTeachers(localTeachers);
+    setCategoryAssignments(localAssignments);
 
     if (!isSupabaseConfigured) {
       setIsLoading(false);
@@ -73,13 +78,14 @@ export default function AdminCategories() {
     try {
       const catsPromise = supabase.from('categories').select('*').order('display_order');
       const teacherPromise = supabase.from('teachers').select('*').order('name');
+      const ctPromise = supabase.from('category_teachers').select('category_id, teacher_id');
 
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Categories fetch timeout')), 2500)
       );
 
-      const [catRes, teacherRes] = (await Promise.race([
-        Promise.all([catsPromise, teacherPromise]),
+      const [catRes, teacherRes, ctRes] = (await Promise.race([
+        Promise.all([catsPromise, teacherPromise, ctPromise]),
         timeoutPromise,
       ])) as any;
 
@@ -91,6 +97,27 @@ export default function AdminCategories() {
         setTeachers(teacherRes.data as Teacher[]);
         setLocalStorage('td_admin_teachers', teacherRes.data);
       }
+
+      // Sync category-teacher assignments
+      const freshAssignments: Record<string, string[]> = {};
+      const activeCats = (catRes?.data || localCats) as Category[];
+      activeCats.forEach((c) => {
+        freshAssignments[c.id] = [];
+      });
+
+      if (ctRes?.data) {
+        ctRes.data.forEach((ct: { category_id: string; teacher_id: string }) => {
+          if (!freshAssignments[ct.category_id]) {
+            freshAssignments[ct.category_id] = [];
+          }
+          if (!freshAssignments[ct.category_id].includes(ct.teacher_id)) {
+            freshAssignments[ct.category_id].push(ct.teacher_id);
+          }
+        });
+      }
+
+      setCategoryAssignments(freshAssignments);
+      setLocalStorage('td_category_teacher_assignments', freshAssignments);
     } catch {
       // Keep cached data
     } finally {
@@ -100,6 +127,22 @@ export default function AdminCategories() {
 
   useEffect(() => {
     fetchData();
+
+    const handleSync = () => {
+      const localAssignments = getLocalStorage<Record<string, string[]>>(
+        'td_category_teacher_assignments',
+        INITIAL_CATEGORY_ASSIGNMENTS
+      );
+      setCategoryAssignments(localAssignments);
+    };
+
+    window.addEventListener('td_admin_categories_updated', handleSync);
+    window.addEventListener('storage', handleSync);
+
+    return () => {
+      window.removeEventListener('td_admin_categories_updated', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
   }, [fetchData]);
 
   const handleOpenAdd = () => {
@@ -126,10 +169,9 @@ export default function AdminCategories() {
     setAssignCategory(c);
     setAssignSearch('');
     setAssignDeptFilter('ALL');
-    const localAssignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-    // If not configured, default to all teachers
-    const initialAssigned = localAssignments[c.id] ?? teachers.map((t) => t.id);
-    setAssignedTeacherIds(new Set(initialAssigned));
+
+    const currentAssignedList = categoryAssignments[c.id] || [];
+    setAssignedTeacherIds(new Set(currentAssignedList));
     setIsAssignModalOpen(true);
 
     if (!isSupabaseConfigured) return;
@@ -140,9 +182,14 @@ export default function AdminCategories() {
         .select('teacher_id')
         .eq('category_id', c.id);
 
-      if (data && data.length > 0) {
-        const set = new Set(data.map((ct: any) => ct.teacher_id));
-        setAssignedTeacherIds(set);
+      if (data !== null && data !== undefined) {
+        const ids = data.map((ct: { teacher_id: string }) => ct.teacher_id);
+        setAssignedTeacherIds(new Set(ids));
+        setCategoryAssignments((prev) => {
+          const updated = { ...prev, [c.id]: ids };
+          setLocalStorage('td_category_teacher_assignments', updated);
+          return updated;
+        });
       }
     } catch {
       // Keep local
@@ -159,9 +206,9 @@ export default function AdminCategories() {
     setIsSaving(true);
     const res = await saveCategory({
       id: editingCategory?.id,
-      name,
-      description,
-      icon,
+      name: name.trim(),
+      description: description.trim(),
+      icon: icon.trim() || '🏆',
       display_order: displayOrder,
       is_active: isActive,
     });
@@ -191,37 +238,49 @@ export default function AdminCategories() {
     }
   };
 
+  const updateAssignmentsState = (catId: string, teacherIds: string[]) => {
+    const updatedAssignments = {
+      ...categoryAssignments,
+      [catId]: teacherIds,
+    };
+    setCategoryAssignments(updatedAssignments);
+    setLocalStorage('td_category_teacher_assignments', updatedAssignments);
+    window.dispatchEvent(new Event('td_admin_categories_updated'));
+    window.dispatchEvent(new Event('td_admin_teachers_updated'));
+  };
+
   const handleToggleAssignTeacher = async (teacherId: string) => {
     if (!assignCategory) return;
 
     const newSet = new Set(assignedTeacherIds);
-    if (newSet.has(teacherId)) {
-      newSet.delete(teacherId);
-    } else {
+    const isAdding = !newSet.has(teacherId);
+
+    if (isAdding) {
       newSet.add(teacherId);
+    } else {
+      newSet.delete(teacherId);
     }
     setAssignedTeacherIds(newSet);
 
-    // Save to localStorage
-    const localAssignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-    localAssignments[assignCategory.id] = Array.from(newSet);
-    setLocalStorage('td_category_teacher_assignments', localAssignments);
-    window.dispatchEvent(new Event('td_admin_categories_updated'));
-    window.dispatchEvent(new Event('td_admin_teachers_updated'));
+    const updatedList = Array.from(newSet);
+    updateAssignmentsState(assignCategory.id, updatedList);
 
     if (isSupabaseConfigured) {
       try {
-        if (!newSet.has(teacherId)) {
+        if (isAdding) {
+          await supabase.from('category_teachers').upsert(
+            {
+              category_id: assignCategory.id,
+              teacher_id: teacherId,
+            },
+            { onConflict: 'category_id,teacher_id' }
+          );
+        } else {
           await supabase
             .from('category_teachers')
             .delete()
             .eq('category_id', assignCategory.id)
             .eq('teacher_id', teacherId);
-        } else {
-          await supabase.from('category_teachers').insert({
-            category_id: assignCategory.id,
-            teacher_id: teacherId,
-          });
         }
       } catch {
         // Handled locally
@@ -235,11 +294,7 @@ export default function AdminCategories() {
     const newSet = new Set(allIds);
     setAssignedTeacherIds(newSet);
 
-    const localAssignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-    localAssignments[assignCategory.id] = allIds;
-    setLocalStorage('td_category_teacher_assignments', localAssignments);
-    window.dispatchEvent(new Event('td_admin_categories_updated'));
-    window.dispatchEvent(new Event('td_admin_teachers_updated'));
+    updateAssignmentsState(assignCategory.id, allIds);
 
     if (isSupabaseConfigured) {
       try {
@@ -255,11 +310,7 @@ export default function AdminCategories() {
     if (!assignCategory) return;
     setAssignedTeacherIds(new Set());
 
-    const localAssignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-    localAssignments[assignCategory.id] = [];
-    setLocalStorage('td_category_teacher_assignments', localAssignments);
-    window.dispatchEvent(new Event('td_admin_categories_updated'));
-    window.dispatchEvent(new Event('td_admin_teachers_updated'));
+    updateAssignmentsState(assignCategory.id, []);
 
     if (isSupabaseConfigured) {
       try {
@@ -276,15 +327,12 @@ export default function AdminCategories() {
     filtered.forEach((t) => newSet.add(t.id));
     setAssignedTeacherIds(newSet);
 
-    const localAssignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-    localAssignments[assignCategory.id] = Array.from(newSet);
-    setLocalStorage('td_category_teacher_assignments', localAssignments);
-    window.dispatchEvent(new Event('td_admin_categories_updated'));
-    window.dispatchEvent(new Event('td_admin_teachers_updated'));
+    const updatedList = Array.from(newSet);
+    updateAssignmentsState(assignCategory.id, updatedList);
 
     if (isSupabaseConfigured) {
       try {
-        const records = Array.from(newSet).map((tId) => ({ category_id: assignCategory.id, teacher_id: tId }));
+        const records = filtered.map((t) => ({ category_id: assignCategory.id, teacher_id: t.id }));
         await supabase.from('category_teachers').upsert(records, { onConflict: 'category_id,teacher_id' });
       } catch {
         // Handled locally
@@ -345,66 +393,70 @@ export default function AdminCategories() {
         </div>
       ) : (
         <div className="space-y-3">
-          {categories.map((category) => (
-            <Card key={category.id} variant="default" padding="none">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 p-4">
-                {/* Info & Icon */}
-                <div className="flex items-start gap-3.5 flex-1 min-w-0">
-                  <div className="w-11 h-11 rounded-xl bg-white/[0.05] flex items-center justify-center flex-shrink-0 text-2xl mt-0.5 sm:mt-0">
-                    {category.icon || '🏆'}
-                  </div>
+          {categories.map((category) => {
+            const assignedCount = categoryAssignments[category.id]?.length ?? 0;
 
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <h3 className="text-sm font-semibold text-white truncate">
-                        {category.name}
-                      </h3>
-                      <Badge variant={category.is_active ? 'success' : 'neutral'}>
-                        {category.is_active ? 'Active' : 'Inactive'}
-                      </Badge>
+            return (
+              <Card key={category.id} variant="default" padding="none">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 p-4">
+                  {/* Info & Icon */}
+                  <div className="flex items-start gap-3.5 flex-1 min-w-0">
+                    <div className="w-11 h-11 rounded-xl bg-white/[0.05] flex items-center justify-center flex-shrink-0 text-2xl mt-0.5 sm:mt-0">
+                      {category.icon || '🏆'}
                     </div>
-                    {category.description && (
-                      <p className="text-xs text-surface-400 line-clamp-2">
-                        {category.description}
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <h3 className="text-sm font-semibold text-white truncate">
+                          {category.name}
+                        </h3>
+                        <Badge variant={category.is_active ? 'success' : 'neutral'}>
+                          {category.is_active ? 'Active' : 'Inactive'}
+                        </Badge>
+                      </div>
+                      {category.description && (
+                        <p className="text-xs text-surface-400 line-clamp-2">
+                          {category.description}
+                        </p>
+                      )}
+                      <p className="text-[10px] text-surface-500 mt-1 font-mono">
+                        Order: #{category.display_order} · Nominees: {assignedCount} teachers
                       </p>
-                    )}
-                    <p className="text-[10px] text-surface-500 mt-1 font-mono">
-                      Order: #{category.display_order}
-                    </p>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-end gap-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-white/[0.06] flex-shrink-0">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      icon={<Users size={14} />}
+                      onClick={() => handleOpenAssign(category)}
+                      className="text-xs"
+                    >
+                      Nominees ({assignedCount})
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={<Edit2 size={14} />}
+                      onClick={() => handleOpenEdit(category)}
+                      className="text-xs"
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={<Trash2 size={14} className="text-surface-500 hover:text-rose-400" />}
+                      onClick={() => setDeleteTarget(category)}
+                      aria-label={`Delete ${category.name}`}
+                    />
                   </div>
                 </div>
-
-                {/* Actions */}
-                <div className="flex items-center justify-end gap-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-white/[0.06] flex-shrink-0">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    icon={<Users size={14} />}
-                    onClick={() => handleOpenAssign(category)}
-                    className="text-xs"
-                  >
-                    Nominees ({getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {})[category.id]?.length ?? teachers.length})
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    icon={<Edit2 size={14} />}
-                    onClick={() => handleOpenEdit(category)}
-                    className="text-xs"
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon={<Trash2 size={14} className="text-surface-500 hover:text-rose-400" />}
-                    onClick={() => setDeleteTarget(category)}
-                    aria-label={`Delete ${category.name}`}
-                  />
-                </div>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
 
@@ -473,7 +525,7 @@ export default function AdminCategories() {
         </form>
       </Modal>
 
-      {/* Assign Teachers Modal (Enhanced for 50+ teachers) */}
+      {/* Assign Teachers Modal */}
       <Modal
         isOpen={isAssignModalOpen}
         onClose={() => setIsAssignModalOpen(false)}

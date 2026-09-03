@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getLocalStorage } from '../lib/utils';
 import { getAllTeachers } from './useTeachers';
+import { INITIAL_CATEGORY_ASSIGNMENTS } from '../data/initialCategories';
 import type { LeaderboardEntry, VotingSettings } from '../types';
 
 /**
@@ -14,9 +15,12 @@ export function getCategoryFallbackLeaderboard(categoryId?: string): Leaderboard
   const teachers = getAllTeachers().filter((t) => t.is_active !== false);
 
   // Filter by category assignment if configured
-  const assignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
+  const assignments = getLocalStorage<Record<string, string[]>>(
+    'td_category_teacher_assignments',
+    INITIAL_CATEGORY_ASSIGNMENTS
+  );
   const catAssigned = assignments[catId];
-  const categoryTeachers = catAssigned && catAssigned.length > 0
+  const categoryTeachers = catAssigned !== undefined
     ? teachers.filter((t) => new Set(catAssigned).has(t.id))
     : teachers;
 
@@ -114,10 +118,11 @@ export function useRealtime(categoryId?: string) {
       }
 
       const allTeachers: any[] = teachersRes?.data || [];
-      const assignedIds = new Set<string>((ctRes?.data || []).map((ct: any) => ct.teacher_id));
-      const categoryTeachers = assignedIds.size > 0
-        ? allTeachers.filter((t) => assignedIds.has(t.id))
-        : allTeachers;
+      let categoryTeachers: any[] = allTeachers;
+      if (ctRes?.data !== null && ctRes?.data !== undefined && !ctRes.error) {
+        const assignedIds = new Set<string>(ctRes.data.map((ct: any) => ct.teacher_id));
+        categoryTeachers = allTeachers.filter((t) => assignedIds.has(t.id));
+      }
 
       const votesMap: Record<string, number> = {};
       (totalsRes?.data || []).forEach((row: any) => {

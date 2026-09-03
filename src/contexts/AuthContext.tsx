@@ -176,7 +176,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const deviceId = getOrCreateDeviceId();
     const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
     const email = `${slug}@student.college`;
-    const studentId = `student-${slug}-${Date.now()}`;
+    
+    // Generate valid UUID for student profile
+    const studentId = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
 
     const studentUser = {
       id: studentId,
@@ -206,6 +210,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } catch {
       // Ignore
+    }
+
+    // Save profile to Supabase database
+    if (isSupabaseConfigured) {
+      try {
+        await supabase.from('profiles').upsert(
+          {
+            id: studentId,
+            email,
+            full_name: cleanName,
+            role: 'student',
+            device_id: deviceId,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        );
+      } catch {
+        // Handled gracefully
+      }
     }
 
     return { success: true };

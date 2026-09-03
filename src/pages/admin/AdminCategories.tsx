@@ -223,7 +223,7 @@ export default function AdminCategories() {
     }
   };
 
-  const handleSelectAllTeachers = () => {
+  const handleSelectAllTeachers = async () => {
     if (!assignCategory) return;
     const allIds = teachers.map((t) => t.id);
     const newSet = new Set(allIds);
@@ -234,9 +234,18 @@ export default function AdminCategories() {
     setLocalStorage('td_category_teacher_assignments', localAssignments);
     window.dispatchEvent(new Event('td_admin_categories_updated'));
     window.dispatchEvent(new Event('td_admin_teachers_updated'));
+
+    if (isSupabaseConfigured) {
+      try {
+        const records = allIds.map((tId) => ({ category_id: assignCategory.id, teacher_id: tId }));
+        await supabase.from('category_teachers').upsert(records, { onConflict: 'category_id,teacher_id' });
+      } catch {
+        // Handled locally
+      }
+    }
   };
 
-  const handleClearAllTeachers = () => {
+  const handleClearAllTeachers = async () => {
     if (!assignCategory) return;
     setAssignedTeacherIds(new Set());
 
@@ -245,6 +254,14 @@ export default function AdminCategories() {
     setLocalStorage('td_category_teacher_assignments', localAssignments);
     window.dispatchEvent(new Event('td_admin_categories_updated'));
     window.dispatchEvent(new Event('td_admin_teachers_updated'));
+
+    if (isSupabaseConfigured) {
+      try {
+        await supabase.from('category_teachers').delete().eq('category_id', assignCategory.id);
+      } catch {
+        // Handled locally
+      }
+    }
   };
 
   return (

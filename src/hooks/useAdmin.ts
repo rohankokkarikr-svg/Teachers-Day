@@ -339,9 +339,38 @@ export function useAdmin() {
 
     try {
       if (teacher.id) {
-        await supabase.from('teachers').update(teacher).eq('id', teacher.id);
+        const { error } = await supabase.from('teachers').update({
+          name: teacher.name,
+          department: teacher.department,
+          subject: teacher.subject,
+          tagline: teacher.tagline,
+          photo_url: teacher.photo_url,
+          is_active: teacher.is_active,
+        }).eq('id', teacher.id);
+        if (error) throw error;
       } else {
-        await supabase.from('teachers').insert(teacher);
+        const { data, error } = await supabase.from('teachers').insert({
+          name: teacher.name,
+          department: teacher.department,
+          subject: teacher.subject,
+          tagline: teacher.tagline,
+          photo_url: teacher.photo_url,
+          is_active: teacher.is_active ?? true,
+        }).select().single();
+        if (error) throw error;
+        if (data) {
+          const idx = updatedList.findIndex(t => t.id === teacherId);
+          if (idx >= 0) {
+            updatedList[idx] = data as Teacher;
+            setLocalStorage('td_admin_teachers', updatedList);
+          }
+          // Automatically assign new teacher to all categories
+          const { data: cats } = await supabase.from('categories').select('id');
+          if (cats && cats.length > 0) {
+            const ctRecords = cats.map(c => ({ category_id: c.id, teacher_id: data.id }));
+            await supabase.from('category_teachers').upsert(ctRecords, { onConflict: 'category_id,teacher_id' });
+          }
+        }
       }
       return { success: true };
     } catch (err: unknown) {
@@ -384,9 +413,36 @@ export function useAdmin() {
 
     try {
       if (category.id) {
-        await supabase.from('categories').update(category).eq('id', category.id);
+        const { error } = await supabase.from('categories').update({
+          name: category.name,
+          description: category.description,
+          icon: category.icon,
+          display_order: category.display_order,
+          is_active: category.is_active,
+        }).eq('id', category.id);
+        if (error) throw error;
       } else {
-        await supabase.from('categories').insert(category);
+        const { data, error } = await supabase.from('categories').insert({
+          name: category.name,
+          description: category.description,
+          icon: category.icon,
+          display_order: category.display_order ?? (categoryList.length + 1),
+          is_active: category.is_active ?? true,
+        }).select().single();
+        if (error) throw error;
+        if (data) {
+          const idx = updatedList.findIndex(c => c.id === categoryId);
+          if (idx >= 0) {
+            updatedList[idx] = data as Category;
+            setLocalStorage('td_admin_categories', updatedList);
+          }
+          // Assign all active teachers to new category
+          const { data: teachers } = await supabase.from('teachers').select('id').eq('is_active', true);
+          if (teachers && teachers.length > 0) {
+            const ctRecords = teachers.map(t => ({ category_id: data.id, teacher_id: t.id }));
+            await supabase.from('category_teachers').upsert(ctRecords, { onConflict: 'category_id,teacher_id' });
+          }
+        }
       }
       return { success: true };
     } catch (err: unknown) {

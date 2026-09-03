@@ -34,19 +34,12 @@ export function useTeachers(categoryId?: string) {
   const [error, setError] = useState<string | null>(null);
 
   const fetchTeachers = useCallback(async () => {
-    const all = getAllTeachers().filter((t) => t.is_active !== false);
-    
-    if (!categoryId) {
-      setTeachers(all);
-      setIsLoading(false);
-      return;
-    }
-
+    const localAll = getAllTeachers().filter((t) => t.is_active !== false);
     const assignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-    const catAssigned = assignments[categoryId] || [];
-    const set = new Set(catAssigned);
-    const filtered = all.filter((t) => set.has(t.id));
-    setTeachers(filtered);
+    const catAssigned = categoryId ? assignments[categoryId] || [] : [];
+    const localSet = new Set(catAssigned);
+    const initialList = categoryId ? localAll.filter((t) => localSet.has(t.id)) : localAll;
+    setTeachers(initialList);
 
     if (!isSupabaseConfigured) {
       setIsLoading(false);
@@ -57,21 +50,41 @@ export function useTeachers(categoryId?: string) {
     setError(null);
 
     try {
-      let query = supabase.from('teachers').select('*').eq('is_active', true).order('name');
-      
+      const teachersPromise = supabase.from('teachers').select('*').eq('is_active', true).order('name');
+      const assignmentsPromise = categoryId
+        ? supabase.from('category_teachers').select('teacher_id').eq('category_id', categoryId)
+        : Promise.resolve({ data: null, error: null });
+
       const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
-        setTimeout(() => reject(new Error('Teachers fetch timeout')), 2500)
+        setTimeout(() => reject(new Error('Teachers fetch timeout')), 3000)
       );
 
-      const { data, error: fetchErr } = ((await Promise.race([query, timeoutPromise])) as any);
+      const [teachersRes, assignmentsRes] = (await Promise.race([
+        Promise.all([teachersPromise, assignmentsPromise]),
+        timeoutPromise,
+      ])) as any;
 
-      if (fetchErr) throw fetchErr;
+      if (teachersRes.error) throw teachersRes.error;
 
-      if (data && data.length > 0) {
-        setLocalStorage('td_admin_teachers', data);
-        const liveAll = data.filter((t: Teacher) => t.is_active !== false);
-        const liveFiltered = liveAll.filter((t: Teacher) => set.has(t.id));
-        setTeachers(liveFiltered);
+      if (teachersRes.data) {
+        setLocalStorage('td_admin_teachers', teachersRes.data);
+        const liveAll = teachersRes.data.filter((t: Teacher) => t.is_active !== false);
+
+        if (!categoryId) {
+          setTeachers(liveAll);
+        } else {
+          let assignedIds: string[] = [];
+          if (assignmentsRes?.data && assignmentsRes.data.length > 0) {
+            assignedIds = assignmentsRes.data.map((ct: any) => ct.teacher_id);
+            assignments[categoryId] = assignedIds;
+            setLocalStorage('td_category_teacher_assignments', assignments);
+          } else {
+            assignedIds = assignments[categoryId] || [];
+          }
+          const liveSet = new Set(assignedIds);
+          const liveFiltered = liveAll.filter((t: Teacher) => liveSet.has(t.id));
+          setTeachers(liveFiltered);
+        }
       }
     } catch {
       // Keep local cached teachers

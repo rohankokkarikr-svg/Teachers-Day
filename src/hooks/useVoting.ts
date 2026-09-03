@@ -6,7 +6,7 @@ import {
   hasUserVotedInCategory,
   recordUserCategoryVote,
 } from '../lib/deviceId';
-import type { SubmitVotesResponse } from '../types';
+import type { SubmitVotesResponse, Profile } from '../types';
 
 export function useVoting(categoryId: string, userId?: string) {
   const userPrefix = userId || 'guest';
@@ -165,7 +165,7 @@ export function useVoting(categoryId: string, userId?: string) {
     window.dispatchEvent(new Event('td_votes_updated'));
   };
 
-  // Submit votes via atomic Supabase RPC function
+  // Submit votes and persist vote_submissions, vote_items, and vote_totals to Supabase
   const submitVotes = async (): Promise<SubmitVotesResponse> => {
     const adminSettings = getLocalStorage<{ is_voting_open?: boolean } | null>('td_admin_settings', null);
     if (adminSettings && adminSettings.is_voting_open === false) {
@@ -184,13 +184,89 @@ export function useVoting(categoryId: string, userId?: string) {
     }
 
     setIsSubmitting(true);
-    try {
-      recordLocalVote();
+    let submissionId = 'sub-' + Date.now();
 
+    try {
       if (isSupabaseConfigured) {
-        try {
-          for (const [teacher_id, vote_count] of Object.entries(votes)) {
-            if (vote_count > 0) {
+        // 1. Resolve valid student ID and ensure profile exists in DB
+        let studentId = userId;
+        const isValidUUID =
+          studentId &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(studentId);
+
+        const authProfile = getLocalStorage<Profile | null>('td_auth_profile', null);
+        if (
+          !isValidUUID &&
+          authProfile?.id &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authProfile.id)
+        ) {
+          studentId = authProfile.id;
+        }
+
+        if (studentId) {
+          const studentName = authProfile?.full_name || 'Student Voter';
+          const studentEmail = authProfile?.email || `student.${studentId.substring(0, 8)}@student.college`;
+
+          try {
+            await supabase.from('profiles').upsert(
+              {
+                id: studentId,
+                email: studentEmail,
+                full_name: studentName,
+                role: 'student',
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: 'id' }
+            );
+          } catch (pErr) {
+            console.error('Error ensuring profile for vote submission:', pErr);
+          }
+
+          // 2. Insert or update vote_submissions row
+          const { data: subData, error: subErr } = await supabase
+            .from('vote_submissions')
+            .upsert(
+              {
+                student_id: studentId,
+                category_id: categoryId,
+                submitted_at: new Date().toISOString(),
+              },
+              { onConflict: 'student_id,category_id' }
+            )
+            .select('id')
+            .single();
+
+          if (!subErr && subData) {
+            submissionId = subData.id;
+
+            // 3. Clear any existing vote_items for this submission to prevent duplicates
+            await supabase.from('vote_items').delete().eq('submission_id', subData.id);
+
+            // 4. Insert vote_items records
+            const voteItemRecords = Object.entries(votes)
+              .filter(([_, count]) => count > 0)
+              .map(([teacher_id, count]) => ({
+                submission_id: subData.id,
+                teacher_id,
+                vote_count: count,
+              }));
+
+            if (voteItemRecords.length > 0) {
+              const { error: itemInsertErr } = await supabase
+                .from('vote_items')
+                .insert(voteItemRecords);
+
+              if (itemInsertErr) {
+                console.error('Error inserting vote_items:', itemInsertErr);
+              }
+            }
+          }
+        }
+
+        // 5. Update vote_totals aggregate counts in Supabase
+        for (const [teacher_id, vote_count] of Object.entries(votes)) {
+          if (vote_count > 0) {
+            try {
               const { data: existing } = await supabase
                 .from('vote_totals')
                 .select('total_votes')
@@ -210,24 +286,28 @@ export function useVoting(categoryId: string, userId?: string) {
                   },
                   { onConflict: 'category_id,teacher_id' }
                 );
+            } catch (tErr) {
+              console.error('Error updating vote_totals:', tErr);
             }
           }
-        } catch {
-          // Local recording succeeded
         }
       }
+
+      // Record vote locally
+      recordLocalVote();
 
       return {
         success: true,
         message: 'Your vote has been submitted successfully!',
-        submission_id: 'submission-' + Date.now(),
+        submission_id: submissionId,
       };
-    } catch {
+    } catch (err: unknown) {
       recordLocalVote();
+      const msg = err instanceof Error ? err.message : 'Your vote has been submitted successfully!';
       return {
         success: true,
-        message: 'Your vote has been submitted successfully!',
-        submission_id: 'submission-' + Date.now(),
+        message: msg,
+        submission_id: submissionId,
       };
     } finally {
       setIsSubmitting(false);

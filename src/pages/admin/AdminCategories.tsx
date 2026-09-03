@@ -297,47 +297,50 @@ export default function AdminCategories() {
         <div className="space-y-3">
           {categories.map((category) => (
             <Card key={category.id} variant="default" padding="none">
-              <div className="flex items-center gap-4 p-4">
-                {/* Icon */}
-                <div className="w-12 h-12 rounded-xl bg-white/[0.05] flex items-center justify-center flex-shrink-0 text-2xl">
-                  {category.icon || '🏆'}
-                </div>
-
-                {/* Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="text-sm font-semibold text-white truncate">
-                      {category.name}
-                    </h3>
-                    <Badge variant={category.is_active ? 'success' : 'neutral'}>
-                      {category.is_active ? 'Active' : 'Inactive'}
-                    </Badge>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 p-4">
+                {/* Info & Icon */}
+                <div className="flex items-start gap-3.5 flex-1 min-w-0">
+                  <div className="w-11 h-11 rounded-xl bg-white/[0.05] flex items-center justify-center flex-shrink-0 text-2xl mt-0.5 sm:mt-0">
+                    {category.icon || '🏆'}
                   </div>
-                  {category.description && (
-                    <p className="text-xs text-surface-400 line-clamp-1">
-                      {category.description}
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <h3 className="text-sm font-semibold text-white truncate">
+                        {category.name}
+                      </h3>
+                      <Badge variant={category.is_active ? 'success' : 'neutral'}>
+                        {category.is_active ? 'Active' : 'Inactive'}
+                      </Badge>
+                    </div>
+                    {category.description && (
+                      <p className="text-xs text-surface-400 line-clamp-2">
+                        {category.description}
+                      </p>
+                    )}
+                    <p className="text-[10px] text-surface-500 mt-1 font-mono">
+                      Order: #{category.display_order}
                     </p>
-                  )}
-                  <p className="text-[10px] text-surface-500 mt-1">
-                    Order: #{category.display_order}
-                  </p>
+                  </div>
                 </div>
 
                 {/* Actions */}
-                <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex items-center justify-end gap-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-white/[0.06] flex-shrink-0">
                   <Button
                     variant="outline"
                     size="sm"
                     icon={<Users size={14} />}
                     onClick={() => handleOpenAssign(category)}
+                    className="text-xs"
                   >
-                    Assign Teachers
+                    Nominees
                   </Button>
                   <Button
                     variant="secondary"
                     size="sm"
                     icon={<Edit2 size={14} />}
                     onClick={() => handleOpenEdit(category)}
+                    className="text-xs"
                   >
                     Edit
                   </Button>

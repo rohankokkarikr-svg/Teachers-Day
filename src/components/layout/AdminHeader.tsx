@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ChevronRight, LogOut, Shield } from 'lucide-react';
+import { ChevronRight, LogOut, Shield, Menu } from 'lucide-react';
 import { ROUTES } from '../../lib/constants';
 import { useAuth } from '../../hooks/useAuth';
 import Button from '../ui/Button';
@@ -28,23 +28,36 @@ export default function AdminHeader() {
     navigate(ROUTES.LOGIN, { replace: true });
   };
 
+  const handleToggleMobileDrawer = () => {
+    window.dispatchEvent(new Event('td_toggle_admin_drawer'));
+  };
+
   return (
     <header className="sticky top-0 z-20 border-b border-white/[0.06]">
       <div className="absolute inset-0 bg-surface-950/80 backdrop-blur-xl" />
-      <div className="relative flex items-center justify-between h-16 px-4 md:px-6">
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-surface-500 flex items-center gap-1">
+      <div className="relative flex items-center justify-between h-16 px-3.5 md:px-6">
+        {/* Left Side: Mobile Menu Button & Breadcrumb */}
+        <div className="flex items-center gap-2 text-sm min-w-0">
+          <button
+            onClick={handleToggleMobileDrawer}
+            className="md:hidden p-2 -ml-1 rounded-xl text-surface-300 hover:text-white hover:bg-white/[0.06] transition-colors"
+            aria-label="Open Admin Menu"
+          >
+            <Menu size={20} />
+          </button>
+
+          <span className="text-surface-500 hidden sm:flex items-center gap-1 flex-shrink-0">
             <Shield size={14} className="text-primary-400" /> Admin
           </span>
-          <ChevronRight size={14} className="text-surface-600" />
-          <span className="text-white font-medium">{currentPage}</span>
+          <ChevronRight size={14} className="text-surface-600 hidden sm:inline" />
+          <span className="text-white font-semibold truncate">{currentPage}</span>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Status indicator */}
+        {/* Right Side: Profile & Logout */}
+        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
           <div className="hidden sm:flex items-center gap-2 text-xs">
             <span className="flex h-2 w-2 rounded-full bg-emerald-500" />
-            <span className="text-surface-400 font-medium">
+            <span className="text-surface-400 font-medium truncate max-w-[120px]">
               {profile?.full_name || 'Admin'}
             </span>
           </div>
@@ -54,9 +67,9 @@ export default function AdminHeader() {
             size="sm"
             icon={<LogOut size={14} className="text-rose-400" />}
             onClick={handleLogout}
-            className="text-xs text-surface-300 hover:text-rose-300"
+            className="text-xs text-surface-300 hover:text-rose-300 px-2.5 sm:px-3"
           >
-            Logout
+            <span className="hidden sm:inline">Logout</span>
           </Button>
         </div>
       </div>

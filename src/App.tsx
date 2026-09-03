@@ -66,11 +66,11 @@ function StudentLayout() {
 function AdminLayout() {
   return (
     <ProtectedRoute requireAdmin>
-      <div className="flex min-h-[100dvh]">
+      <div className="flex min-h-[100dvh] bg-surface-950">
         <AdminSidebar />
-        <div className="flex-1 md:ml-64">
+        <div className="flex-1 md:ml-64 flex flex-col min-w-0">
           <AdminHeader />
-          <main>
+          <main className="flex-1 pb-24 md:pb-8 overflow-x-hidden">
             <Suspense fallback={<PageLoader />}>
               <Outlet />
             </Suspense>

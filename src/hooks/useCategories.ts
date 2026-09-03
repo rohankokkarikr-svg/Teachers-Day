@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getUserSubmittedCategories } from '../lib/deviceId';
 import { getLocalStorage, setLocalStorage } from '../lib/utils';
+import { getAllTeachers } from './useTeachers';
 import type { Category } from '../types';
 
 export interface CategoryWithStatus extends Category {
@@ -33,11 +34,12 @@ export function useCategories(userId?: string) {
     const userVotedArray = getUserSubmittedCategories(userId);
     const localVoted = new Set(userVotedArray);
     const assignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
+    const allTeachersCount = getAllTeachers().filter((t) => t.is_active !== false).length;
 
     return raw.map((cat) => ({
       ...cat,
       voted: localVoted.has(cat.id),
-      teacherCount: assignments[cat.id]?.length ?? 0,
+      teacherCount: assignments[cat.id] ? assignments[cat.id].length : allTeachersCount,
     }));
   });
   const [isLoading, setIsLoading] = useState(false);
@@ -50,11 +52,12 @@ export function useCategories(userId?: string) {
     raw.sort((a, b) => a.display_order - b.display_order);
 
     const assignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
+    const allTeachersCount = getAllTeachers().filter((t) => t.is_active !== false).length;
 
     const formattedLocal: CategoryWithStatus[] = raw.map((c) => ({
       ...c,
       voted: localVoted.has(c.id),
-      teacherCount: assignments[c.id]?.length ?? 0,
+      teacherCount: assignments[c.id] ? assignments[c.id].length : allTeachersCount,
     }));
 
     setCategories(formattedLocal);

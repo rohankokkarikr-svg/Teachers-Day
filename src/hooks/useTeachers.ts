@@ -1,21 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getLocalStorage, setLocalStorage } from '../lib/utils';
+import { INITIAL_TEACHERS_DATA } from '../data/initialTeachers';
 import type { Teacher } from '../types';
 
-export const INITIAL_FALLBACK_TEACHERS: Teacher[] = [
-  { id: '22222222-0000-0000-0000-000000000001', name: 'Dr. Priya Sharma', department: 'Computer Science', subject: 'Data Structures & Algorithms', tagline: 'Making algorithms intuitive and fun!', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000002', name: 'Prof. Rajesh Kumar', department: 'Mathematics', subject: 'Linear Algebra & Calculus', tagline: 'Numbers tell stories if you listen closely.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000003', name: 'Dr. Ananya Desai', department: 'Physics', subject: 'Quantum Mechanics', tagline: 'Exploring the mysteries of the universe.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000004', name: 'Prof. Vikram Singh', department: 'English Literature', subject: 'Modern Communication', tagline: 'Words have the power to change minds.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000005', name: 'Dr. Meera Patel', department: 'Chemistry', subject: 'Organic Chemistry', tagline: 'Chemistry is in everything around us.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000006', name: 'Prof. Arjun Nair', department: 'Electronics', subject: 'Digital System Design', tagline: 'Building tomorrow hardware today.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000007', name: 'Dr. Sunita Rao', department: 'Biotechnology', subject: 'Genetic Engineering', tagline: 'Unraveling the code of life.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000008', name: 'Prof. Kabir Verma', department: 'Mechanical Eng.', subject: 'Thermodynamics', tagline: 'Engineering efficiency in motion.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-];
+export const INITIAL_FALLBACK_TEACHERS: Teacher[] = INITIAL_TEACHERS_DATA;
 
 /**
- * Gets all active teachers from storage or fallback
+ * Gets all active teachers from storage or fallback (minimum 50+ teachers)
  */
 export function getAllTeachers(): Teacher[] {
   return getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_FALLBACK_TEACHERS);
@@ -26,7 +18,9 @@ export function useTeachers(categoryId?: string) {
     const all = getAllTeachers().filter((t) => t.is_active !== false);
     if (!categoryId) return all;
     const assignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-    const catAssigned = assignments[categoryId] || [];
+    const catAssigned = assignments[categoryId];
+    // If not customized yet, default to all active teachers
+    if (!catAssigned) return all;
     const set = new Set(catAssigned);
     return all.filter((t) => set.has(t.id));
   });
@@ -36,9 +30,12 @@ export function useTeachers(categoryId?: string) {
   const fetchTeachers = useCallback(async () => {
     const localAll = getAllTeachers().filter((t) => t.is_active !== false);
     const assignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-    const catAssigned = categoryId ? assignments[categoryId] || [] : [];
-    const localSet = new Set(catAssigned);
-    const initialList = categoryId ? localAll.filter((t) => localSet.has(t.id)) : localAll;
+    const catAssigned = categoryId ? assignments[categoryId] : undefined;
+    const initialList = categoryId
+      ? catAssigned
+        ? localAll.filter((t) => new Set(catAssigned).has(t.id))
+        : localAll
+      : localAll;
     setTeachers(initialList);
 
     if (!isSupabaseConfigured) {
@@ -66,7 +63,7 @@ export function useTeachers(categoryId?: string) {
 
       if (teachersRes.error) throw teachersRes.error;
 
-      if (teachersRes.data) {
+      if (teachersRes.data && teachersRes.data.length > 0) {
         setLocalStorage('td_admin_teachers', teachersRes.data);
         const liveAll = teachersRes.data.filter((t: Teacher) => t.is_active !== false);
 
@@ -78,12 +75,16 @@ export function useTeachers(categoryId?: string) {
             assignedIds = assignmentsRes.data.map((ct: any) => ct.teacher_id);
             assignments[categoryId] = assignedIds;
             setLocalStorage('td_category_teacher_assignments', assignments);
+            const liveSet = new Set(assignedIds);
+            setTeachers(liveAll.filter((t: Teacher) => liveSet.has(t.id)));
+          } else if (assignments[categoryId]) {
+            assignedIds = assignments[categoryId];
+            const liveSet = new Set(assignedIds);
+            setTeachers(liveAll.filter((t: Teacher) => liveSet.has(t.id)));
           } else {
-            assignedIds = assignments[categoryId] || [];
+            // Default to all active teachers if no category-specific restriction
+            setTeachers(liveAll);
           }
-          const liveSet = new Set(assignedIds);
-          const liveFiltered = liveAll.filter((t: Teacher) => liveSet.has(t.id));
-          setTeachers(liveFiltered);
         }
       }
     } catch {

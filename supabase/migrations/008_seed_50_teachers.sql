@@ -1,24 +1,9 @@
 -- ========================================================
 -- TEACHERS' DAY LIVE VOTING & AWARDS PLATFORM 2026
--- Migration 004: Development Seed Data (52+ Teachers)
+-- Migration 008: Populate Minimum 50+ Candidate Teachers & Category Links
 -- ========================================================
 
--- Insert Sample Categories (Valid Hex UUIDs)
-INSERT INTO public.categories (id, name, description, icon, display_order, is_active)
-VALUES
-  ('11111111-0000-0000-0000-000000000001', 'Most Inspiring Teacher', 'The teacher who lights the spark of curiosity and encourages students to reach beyond their limits.', '✨', 1, true),
-  ('11111111-0000-0000-0000-000000000002', 'Best Explainer', 'Makes even the most complex algorithms, formulas, and theories crystal clear.', '💡', 2, true),
-  ('11111111-0000-0000-0000-000000000003', 'Most Supportive Teacher', 'Always available during office hours and goes out of their way to help every student.', '🤝', 3, true),
-  ('11111111-0000-0000-0000-000000000004', 'Best Motivator', 'Pushes you to achieve your absolute best and never lets you give up.', '🔥', 4, true),
-  ('11111111-0000-0000-0000-000000000005', 'Friendliest Teacher', 'Creates a warm, welcoming, and open environment in every lecture.', '😊', 5, true),
-  ('11111111-0000-0000-0000-000000000006', 'Most Energetic Teacher', 'Brings unmatched passion, enthusiasm, and energy to every single class.', '⚡', 6, true),
-  ('11111111-0000-0000-0000-000000000007', 'Students Favourite Teacher', 'The overall most beloved mentor of the college community.', '❤️', 7, true)
-ON CONFLICT (name) DO UPDATE SET
-  description = EXCLUDED.description,
-  icon = EXCLUDED.icon,
-  display_order = EXCLUDED.display_order;
-
--- Insert 52 Comprehensive Sample Teachers (Valid Hex UUIDs)
+-- Insert/Upsert 52 Teachers Across Diverse Academic Departments
 INSERT INTO public.teachers (id, name, department, subject, tagline, photo_url, is_active)
 VALUES
   ('22222222-0000-0000-0000-000000000001', 'Dr. Priya Sharma', 'Computer Science', 'Data Structures & Algorithms', 'Making algorithms intuitive, visual, and fun!', '', true),
@@ -80,7 +65,7 @@ ON CONFLICT (id) DO UPDATE SET
   tagline = EXCLUDED.tagline,
   is_active = EXCLUDED.is_active;
 
--- Assign Teachers to Categories (M:N)
+-- Link all teachers to all active categories
 INSERT INTO public.category_teachers (category_id, teacher_id)
 SELECT c.id, t.id
 FROM public.categories c

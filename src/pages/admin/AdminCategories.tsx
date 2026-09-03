@@ -1,5 +1,16 @@
-import { useState, useEffect, useCallback } from 'react';
-import { FolderOpen, Plus, Edit2, Users, CheckCircle2, XCircle, Trash2 } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  FolderOpen,
+  Plus,
+  Edit2,
+  Users,
+  CheckCircle2,
+  XCircle,
+  Trash2,
+  Search,
+  CheckCheck,
+  RotateCcw,
+} from 'lucide-react';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
@@ -11,6 +22,7 @@ import { getLocalStorage, setLocalStorage } from '../../lib/utils';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useAdmin } from '../../hooks/useAdmin';
 import { toast } from '../../components/ui/Toast';
+import { INITIAL_TEACHERS_DATA } from '../../data/initialTeachers';
 import type { Category, Teacher } from '../../types';
 
 const INITIAL_CATEGORIES: Category[] = [
@@ -23,20 +35,9 @@ const INITIAL_CATEGORIES: Category[] = [
   { id: '11111111-0000-0000-0000-000000000007', name: "Students' Favourite Teacher", description: 'The overall most beloved mentor of the college community', icon: '❤️', display_order: 7, is_active: true, created_at: '', updated_at: '' },
 ];
 
-const INITIAL_TEACHERS: Teacher[] = [
-  { id: '22222222-0000-0000-0000-000000000001', name: 'Dr. Priya Sharma', department: 'Computer Science', subject: 'Data Structures & Algorithms', tagline: 'Making algorithms intuitive and fun!', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000002', name: 'Prof. Rajesh Kumar', department: 'Mathematics', subject: 'Linear Algebra & Calculus', tagline: 'Numbers tell stories if you listen closely.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000003', name: 'Dr. Ananya Desai', department: 'Physics', subject: 'Quantum Mechanics', tagline: 'Exploring the mysteries of the universe.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000004', name: 'Prof. Vikram Singh', department: 'English Literature', subject: 'Modern Communication', tagline: 'Words have the power to change minds.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000005', name: 'Dr. Meera Patel', department: 'Chemistry', subject: 'Organic Chemistry', tagline: 'Chemistry is in everything around us.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000006', name: 'Prof. Arjun Nair', department: 'Electronics', subject: 'Digital System Design', tagline: 'Building tomorrow hardware today.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000007', name: 'Dr. Sunita Rao', department: 'Biotechnology', subject: 'Genetic Engineering', tagline: 'Unraveling the code of life.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-  { id: '22222222-0000-0000-0000-000000000008', name: 'Prof. Kabir Verma', department: 'Mechanical Eng.', subject: 'Thermodynamics', tagline: 'Engineering efficiency in motion.', photo_url: '', is_active: true, created_at: '', updated_at: '' },
-];
-
 export default function AdminCategories() {
   const [categories, setCategories] = useState<Category[]>(() => getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES));
-  const [teachers, setTeachers] = useState<Teacher[]>(() => getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS));
+  const [teachers, setTeachers] = useState<Teacher[]>(() => getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA));
   const [isLoading, setIsLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -44,6 +45,8 @@ export default function AdminCategories() {
   const [assignCategory, setAssignCategory] = useState<Category | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Category | null>(null);
   const [assignedTeacherIds, setAssignedTeacherIds] = useState<Set<string>>(new Set());
+  const [assignSearch, setAssignSearch] = useState('');
+  const [assignDeptFilter, setAssignDeptFilter] = useState('ALL');
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -58,7 +61,7 @@ export default function AdminCategories() {
 
   const fetchData = useCallback(async () => {
     const localCats = getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES);
-    const localTeachers = getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS);
+    const localTeachers = getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA);
     setCategories(localCats);
     setTeachers(localTeachers);
 
@@ -121,8 +124,11 @@ export default function AdminCategories() {
 
   const handleOpenAssign = async (c: Category) => {
     setAssignCategory(c);
+    setAssignSearch('');
+    setAssignDeptFilter('ALL');
     const localAssignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-    const initialAssigned = localAssignments[c.id] || [];
+    // If not configured, default to all teachers
+    const initialAssigned = localAssignments[c.id] ?? teachers.map((t) => t.id);
     setAssignedTeacherIds(new Set(initialAssigned));
     setIsAssignModalOpen(true);
 
@@ -134,7 +140,7 @@ export default function AdminCategories() {
         .select('teacher_id')
         .eq('category_id', c.id);
 
-      if (data) {
+      if (data && data.length > 0) {
         const set = new Set(data.map((ct: any) => ct.teacher_id));
         setAssignedTeacherIds(set);
       }
@@ -264,6 +270,50 @@ export default function AdminCategories() {
     }
   };
 
+  const handleSelectFilteredTeachers = async (filtered: Teacher[]) => {
+    if (!assignCategory) return;
+    const newSet = new Set(assignedTeacherIds);
+    filtered.forEach((t) => newSet.add(t.id));
+    setAssignedTeacherIds(newSet);
+
+    const localAssignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
+    localAssignments[assignCategory.id] = Array.from(newSet);
+    setLocalStorage('td_category_teacher_assignments', localAssignments);
+    window.dispatchEvent(new Event('td_admin_categories_updated'));
+    window.dispatchEvent(new Event('td_admin_teachers_updated'));
+
+    if (isSupabaseConfigured) {
+      try {
+        const records = Array.from(newSet).map((tId) => ({ category_id: assignCategory.id, teacher_id: tId }));
+        await supabase.from('category_teachers').upsert(records, { onConflict: 'category_id,teacher_id' });
+      } catch {
+        // Handled locally
+      }
+    }
+  };
+
+  // Departments for modal filtering
+  const assignDepartments = useMemo(() => {
+    const set = new Set<string>();
+    teachers.forEach((t) => {
+      if (t.department) set.add(t.department);
+    });
+    return Array.from(set).sort();
+  }, [teachers]);
+
+  // Filtered teachers inside the assign modal
+  const filteredModalTeachers = useMemo(() => {
+    return teachers.filter((t) => {
+      const matchQuery =
+        t.name.toLowerCase().includes(assignSearch.toLowerCase()) ||
+        t.department.toLowerCase().includes(assignSearch.toLowerCase()) ||
+        (t.subject && t.subject.toLowerCase().includes(assignSearch.toLowerCase()));
+
+      const matchDept = assignDeptFilter === 'ALL' || t.department === assignDeptFilter;
+      return matchQuery && matchDept;
+    });
+  }, [teachers, assignSearch, assignDeptFilter]);
+
   return (
     <div className="p-4 md:p-6 space-y-6">
       {/* Header */}
@@ -274,7 +324,7 @@ export default function AdminCategories() {
             Category Management
           </h1>
           <p className="section-subtitle">
-            Configure award categories, descriptions, display order, and assign candidate teachers ({categories.length} categories)
+            Configure award categories, descriptions, display order, and assign candidate teachers ({categories.length} categories, {teachers.length} total teachers)
           </p>
         </div>
         <Button
@@ -333,7 +383,7 @@ export default function AdminCategories() {
                     onClick={() => handleOpenAssign(category)}
                     className="text-xs"
                   >
-                    Nominees
+                    Nominees ({getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {})[category.id]?.length ?? teachers.length})
                   </Button>
                   <Button
                     variant="secondary"
@@ -423,72 +473,156 @@ export default function AdminCategories() {
         </form>
       </Modal>
 
-      {/* Assign Teachers Modal */}
+      {/* Assign Teachers Modal (Enhanced for 50+ teachers) */}
       <Modal
         isOpen={isAssignModalOpen}
         onClose={() => setIsAssignModalOpen(false)}
-        title={`Assign Teachers — ${assignCategory?.name}`}
+        title={`Assign Nominees — ${assignCategory?.name}`}
         size="lg"
       >
-        <div className="flex items-center justify-between gap-2 mb-4">
-          <p className="text-xs text-surface-400">
-            {assignedTeacherIds.size} of {teachers.length} teachers assigned
-          </p>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleSelectAllTeachers}
-              className="text-xs text-primary-400 hover:text-primary-300"
-            >
-              Select All
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleClearAllTeachers}
-              className="text-xs text-rose-400 hover:text-rose-300"
-            >
-              Clear All
-            </Button>
-          </div>
-        </div>
+        <div className="space-y-4">
+          {/* Top Bar with quick counters and action buttons */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Badge variant="primary" className="!text-xs">
+                {assignedTeacherIds.size} of {teachers.length} Assigned
+              </Badge>
+              <span className="text-xs text-surface-400">
+                ({filteredModalTeachers.length} shown)
+              </span>
+            </div>
 
-        <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
-          {teachers.map((teacher) => {
-            const isAssigned = assignedTeacherIds.has(teacher.id);
-            return (
-              <div
-                key={teacher.id}
-                onClick={() => handleToggleAssignTeacher(teacher.id)}
-                className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer ${
-                  isAssigned
-                    ? 'border-primary-500/40 bg-primary-500/10'
-                    : 'border-surface-700/50 bg-surface-800/40 hover:bg-surface-800'
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleSelectAllTeachers}
+                icon={<CheckCheck size={12} />}
+                className="text-xs !py-1 text-primary-400 hover:text-primary-300"
+              >
+                Select All
+              </Button>
+              {filteredModalTeachers.length < teachers.length && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleSelectFilteredTeachers(filteredModalTeachers)}
+                  className="text-xs !py-1 text-emerald-400 hover:text-emerald-300"
+                >
+                  Select Filtered
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearAllTeachers}
+                icon={<RotateCcw size={12} />}
+                className="text-xs !py-1 text-rose-400 hover:text-rose-300"
+              >
+                Clear All
+              </Button>
+            </div>
+          </div>
+
+          {/* Search and Department Filter Toolbar */}
+          <div className="space-y-2">
+            <Input
+              placeholder="Search teachers by name, department, or subject..."
+              value={assignSearch}
+              onChange={(e) => setAssignSearch(e.target.value)}
+              icon={<Search size={14} />}
+              className="!py-1.5 !text-xs"
+            />
+
+            {/* Department chips */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-hide text-xs">
+              <button
+                type="button"
+                onClick={() => setAssignDeptFilter('ALL')}
+                className={`px-2.5 py-1 rounded-lg whitespace-nowrap transition-all flex-shrink-0 text-[11px] font-medium ${
+                  assignDeptFilter === 'ALL'
+                    ? 'bg-primary-500 text-white font-semibold'
+                    : 'bg-surface-800 text-surface-400 hover:text-white'
                 }`}
               >
-                <div>
-                  <p className="text-sm font-semibold text-white">{teacher.name}</p>
-                  <p className="text-xs text-surface-400">{teacher.department}</p>
-                </div>
-                {isAssigned ? (
-                  <Badge variant="success" icon={<CheckCircle2 size={12} />}>
-                    Assigned
-                  </Badge>
-                ) : (
-                  <Badge variant="neutral" icon={<XCircle size={12} />}>
-                    Not Assigned
-                  </Badge>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                All ({teachers.length})
+              </button>
+              {assignDepartments.map((dept) => {
+                const count = teachers.filter((t) => t.department === dept).length;
+                const isSelected = assignDeptFilter === dept;
+                return (
+                  <button
+                    key={dept}
+                    type="button"
+                    onClick={() => setAssignDeptFilter(dept)}
+                    className={`px-2.5 py-1 rounded-lg whitespace-nowrap transition-all flex-shrink-0 text-[11px] font-medium ${
+                      isSelected
+                        ? 'bg-primary-500 text-white font-semibold'
+                        : 'bg-surface-800 text-surface-400 hover:text-white'
+                    }`}
+                  >
+                    {dept} ({count})
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-        <div className="flex justify-end pt-4 border-t border-surface-700/50">
-          <Button variant="primary" onClick={() => setIsAssignModalOpen(false)}>
-            Done
-          </Button>
+          {/* Nominees List */}
+          <div className="max-h-96 overflow-y-auto space-y-2 pr-1 divide-y divide-surface-800/40">
+            {filteredModalTeachers.length === 0 ? (
+              <div className="p-8 text-center text-surface-400 text-xs">
+                No teachers match your search or department filter.
+              </div>
+            ) : (
+              filteredModalTeachers.map((teacher) => {
+                const isAssigned = assignedTeacherIds.has(teacher.id);
+                return (
+                  <div
+                    key={teacher.id}
+                    onClick={() => handleToggleAssignTeacher(teacher.id)}
+                    className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer select-none ${
+                      isAssigned
+                        ? 'border-primary-500/40 bg-primary-500/10'
+                        : 'border-surface-700/40 bg-surface-800/30 hover:bg-surface-800'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0 pr-2">
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs font-semibold text-white truncate">{teacher.name}</p>
+                        {!teacher.is_active && (
+                          <span className="text-[10px] text-surface-500">(Inactive)</span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-primary-300 truncate">
+                        {teacher.department}
+                        {teacher.subject && ` · ${teacher.subject}`}
+                      </p>
+                    </div>
+
+                    {isAssigned ? (
+                      <Badge variant="success" icon={<CheckCircle2 size={12} />} className="!text-[10px] !py-0.5">
+                        Assigned
+                      </Badge>
+                    ) : (
+                      <Badge variant="neutral" icon={<XCircle size={12} />} className="!text-[10px] !py-0.5">
+                        Excluded
+                      </Badge>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <div className="flex justify-between items-center pt-4 border-t border-surface-700/50">
+            <span className="text-xs text-surface-400 font-medium">
+              Changes save automatically
+            </span>
+            <Button variant="primary" size="sm" onClick={() => setIsAssignModalOpen(false)}>
+              Done
+            </Button>
+          </div>
         </div>
       </Modal>
 

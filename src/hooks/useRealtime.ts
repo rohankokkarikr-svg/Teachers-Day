@@ -15,9 +15,10 @@ export function getCategoryFallbackLeaderboard(categoryId?: string): Leaderboard
 
   // Filter by category assignment if configured
   const assignments = getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', {});
-  const catAssigned = assignments[catId] || [];
-  const set = new Set(catAssigned);
-  const categoryTeachers = teachers.filter((t) => set.has(t.id));
+  const catAssigned = assignments[catId];
+  const categoryTeachers = catAssigned && catAssigned.length > 0
+    ? teachers.filter((t) => new Set(catAssigned).has(t.id))
+    : teachers;
 
   // Read actual submitted votes cast by real students
   const localTotals = getLocalStorage<Record<string, Record<string, number>>>('td_category_vote_totals', {});

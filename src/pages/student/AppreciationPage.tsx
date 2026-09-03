@@ -189,11 +189,13 @@ export default function AppreciationPage() {
                     className="bg-surface-900 border border-surface-700/70 rounded-lg px-2.5 py-1 text-xs text-surface-200 focus:outline-none focus:border-primary-500"
                   >
                     <option value="">Dedicate to (All Teachers / General)</option>
-                    {teachers.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name} ({t.department})
-                      </option>
-                    ))}
+                    {[...teachers]
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} — {t.department}
+                        </option>
+                      ))}
                   </select>
                 </div>
 

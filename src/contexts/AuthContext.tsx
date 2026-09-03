@@ -1,8 +1,12 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { User, Session } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
-import { getOrCreateDeviceId } from '../lib/deviceId';
+import type { User, Session } from '@supabase/supabase-js';
+import {
+  getOrCreateDeviceId,
+  isDeviceBoundToDifferentStudent,
+  bindDeviceToStudent,
+} from '../lib/deviceId';
 import type { Profile, UserRole } from '../types';
 
 interface AuthContextType {
@@ -172,8 +176,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!cleanName) {
       return { success: false, error: 'Please enter your name.' };
     }
+    if (cleanName.length < 2) {
+      return { success: false, error: 'Name must be at least 2 characters long.' };
+    }
 
     const deviceId = getOrCreateDeviceId();
+
+    // 1. Anti-Abuse: Check local & cookie device binding
+    const deviceCheck = isDeviceBoundToDifferentStudent(cleanName);
+    if (deviceCheck.isBlocked && deviceCheck.boundName) {
+      return {
+        success: false,
+        error: `This device is already registered to "${deviceCheck.boundName}". Only 1 student account is permitted per device to ensure voting integrity.`,
+      };
+    }
+
+    // 2. Anti-Abuse: Check cloud device binding in Supabase
+    if (isSupabaseConfigured) {
+      try {
+        const { data: cloudProfiles } = await supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('device_id', deviceId)
+          .limit(1);
+
+        if (cloudProfiles && cloudProfiles.length > 0) {
+          const registeredName = cloudProfiles[0].full_name;
+          const currentSlug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
+          const registeredSlug = (registeredName || '').toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
+
+          if (registeredSlug && registeredSlug !== currentSlug) {
+            return {
+              success: false,
+              error: `This device is already registered to "${registeredName}". Only 1 account is permitted per device.`,
+            };
+          }
+        }
+      } catch {
+        // Fallback to local device binding check
+      }
+    }
+
+    // 3. Bind this device to the student name
+    bindDeviceToStudent(cleanName);
+
     const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
     const email = `${slug}@student.college`;
     

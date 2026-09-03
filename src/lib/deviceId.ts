@@ -4,6 +4,69 @@
  */
 
 const DEVICE_ID_KEY = 'td_device_id';
+const DEVICE_BOUND_STUDENT_KEY = 'td_device_bound_student';
+
+export interface DeviceBinding {
+  name: string;
+  slug: string;
+  boundAt: string;
+}
+
+/**
+ * Retrieves the student account permanently bound to this device
+ */
+export function getDeviceBoundStudent(): DeviceBinding | null {
+  try {
+    const raw = localStorage.getItem(DEVICE_BOUND_STUDENT_KEY);
+    if (raw) return JSON.parse(raw);
+
+    const cookieMatch = document.cookie.match(new RegExp(`(^| )${DEVICE_BOUND_STUDENT_KEY}=([^;]+)`));
+    if (cookieMatch) {
+      return JSON.parse(decodeURIComponent(cookieMatch[2]));
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Permanently binds this physical device to the first student account created on it
+ */
+export function bindDeviceToStudent(fullName: string): void {
+  try {
+    const cleanName = fullName.trim();
+    const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
+    const binding: DeviceBinding = {
+      name: cleanName,
+      slug,
+      boundAt: new Date().toISOString(),
+    };
+    localStorage.setItem(DEVICE_BOUND_STUDENT_KEY, JSON.stringify(binding));
+    try {
+      const expires = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
+      document.cookie = `${DEVICE_BOUND_STUDENT_KEY}=${encodeURIComponent(JSON.stringify(binding))}; expires=${expires}; path=/; SameSite=Lax`;
+    } catch {
+      // Ignore cookie error
+    }
+  } catch {
+    // Ignore storage error
+  }
+}
+
+/**
+ * Checks if this device is already bound to a different student account
+ */
+export function isDeviceBoundToDifferentStudent(fullName: string): { isBlocked: boolean; boundName?: string } {
+  const bound = getDeviceBoundStudent();
+  if (!bound || !bound.name) return { isBlocked: false };
+
+  const currentSlug = fullName.trim().toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
+  if (bound.slug && bound.slug !== currentSlug) {
+    return { isBlocked: true, boundName: bound.name };
+  }
+  return { isBlocked: false, boundName: bound.name };
+}
 
 /**
  * Generates or retrieves a persistent, unique Device ID
@@ -51,21 +114,22 @@ export function getUserSubmittedCategoriesKey(userId?: string): string {
 }
 
 /**
- * Returns the list of category IDs that have been voted on by a specific user
+ * Returns the list of category IDs that have been voted on by a specific user or device
  */
 export function getUserSubmittedCategories(userId?: string): string[] {
   try {
     const key = getUserSubmittedCategoriesKey(userId);
     const raw = localStorage.getItem(key);
-    if (raw) return JSON.parse(raw);
+    const userVoted = raw ? JSON.parse(raw) : [];
 
-    // Fallback: check legacy non-namespaced key if userId matches current demo user
-    if (!userId) {
-      const legacy = localStorage.getItem('td_submitted_categories');
-      return legacy ? JSON.parse(legacy) : [];
-    }
+    // Also check global device vote record
+    const deviceId = getOrCreateDeviceId();
+    const deviceKey = `td_device_voted_categories_${deviceId}`;
+    const rawDevice = localStorage.getItem(deviceKey);
+    const deviceVoted = rawDevice ? JSON.parse(rawDevice) : [];
 
-    return [];
+    const merged = Array.from(new Set([...userVoted, ...deviceVoted]));
+    return merged;
   } catch {
     return [];
   }
@@ -83,8 +147,17 @@ export function recordUserCategoryVote(categoryId: string, userId?: string): voi
       localStorage.setItem(key, JSON.stringify(updated));
     }
 
-    // Also store device-level registration map for admin audit
+    // Also lock device for this category
     const deviceId = getOrCreateDeviceId();
+    const deviceKey = `td_device_voted_categories_${deviceId}`;
+    const rawDevice = localStorage.getItem(deviceKey);
+    const deviceVoted = rawDevice ? JSON.parse(rawDevice) : [];
+    if (!deviceVoted.includes(categoryId)) {
+      deviceVoted.push(categoryId);
+      localStorage.setItem(deviceKey, JSON.stringify(deviceVoted));
+    }
+
+    // Also store device-level registration map for admin audit
     const deviceLogsKey = 'td_device_audit_log';
     const rawLogs = localStorage.getItem(deviceLogsKey);
     const logs = rawLogs ? JSON.parse(rawLogs) : [];
@@ -101,7 +174,7 @@ export function recordUserCategoryVote(categoryId: string, userId?: string): voi
 }
 
 /**
- * Checks whether a specific user has already submitted a vote for a given category
+ * Checks whether a specific user or this device has already submitted a vote for a given category
  */
 export function hasUserVotedInCategory(categoryId: string, userId?: string): boolean {
   if (!categoryId) return false;

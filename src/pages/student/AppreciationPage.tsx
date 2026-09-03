@@ -8,6 +8,7 @@ import { toast } from '../../components/ui/Toast';
 import { getLocalStorage, setLocalStorage } from '../../lib/utils';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useTeachers } from '../../hooks/useTeachers';
+import { useAuthContext } from '../../contexts/AuthContext';
 import type { AppreciationMessage } from '../../types';
 
 const cardColors = [
@@ -25,6 +26,7 @@ export default function AppreciationPage() {
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { teachers } = useTeachers();
+  const { user } = useAuthContext();
   const maxLength = 280;
 
   const fetchMessages = useCallback(async () => {
@@ -41,7 +43,7 @@ export default function AppreciationPage() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      if (data) {
+      if (data && data.length > 0) {
         setMessages(data as AppreciationMessage[]);
         setLocalStorage('td_admin_messages', data);
       }
@@ -66,15 +68,41 @@ export default function AppreciationPage() {
     };
   }, [fetchMessages]);
 
+  // Real-time subscription to new appreciation messages
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+
+    const channel = supabase
+      .channel('appreciation_wall_live')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'appreciation_messages',
+        },
+        () => {
+          fetchMessages();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchMessages]);
+
   const handleSubmit = async () => {
     if (!message.trim() || message.length > maxLength) return;
 
     setIsSubmitting(true);
     try {
       const selectedTeacher = teachers.find((t) => t.id === selectedTeacherId);
+      const studentIdentifier = user?.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : '33333333-0000-0000-0000-000000000001');
+
       const newMsg: AppreciationMessage = {
         id: 'msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-        student_id: 'student-' + Date.now(),
+        student_id: studentIdentifier,
         teacher_id: selectedTeacherId || undefined,
         teacher: selectedTeacher || undefined,
         message: message.trim(),
@@ -91,6 +119,7 @@ export default function AppreciationPage() {
       if (isSupabaseConfigured) {
         try {
           await supabase.from('appreciation_messages').insert({
+            student_id: studentIdentifier.includes('-') && studentIdentifier.length === 36 ? studentIdentifier : null,
             message: message.trim(),
             teacher_id: selectedTeacherId || null,
             status: 'approved',

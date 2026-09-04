@@ -138,13 +138,26 @@ export function useCategories(userId?: string) {
         }
 
         // Ensure all loaded categories have non-empty nominees
+        let needsCloudNomineeSync = false;
         catRes.data.forEach((cat: Category) => {
           if (!freshAssignments[cat.id] || freshAssignments[cat.id].length === 0) {
             freshAssignments[cat.id] = getDefaultCategoryTeachers(cat);
+            needsCloudNomineeSync = true;
           }
         });
 
         setLocalStorage('td_category_teacher_assignments', freshAssignments);
+
+        // Auto-heal empty remote category_teachers table
+        if (needsCloudNomineeSync || !ctRes?.data || ctRes.data.length === 0) {
+          (async () => {
+            try {
+              await supabase.rpc('sync_system_defaults');
+            } catch {
+              // Ignore background auto-heal error
+            }
+          })();
+        }
 
         // Ground truth voted category IDs from Supabase
         const votedCategoryIds = new Set<string>();

@@ -11,7 +11,12 @@
     "test:load": "node supabase/tests/concurrency_suite.js",
     "test:load:mock": "node supabase/tests/concurrency_suite.js",
     "test:load:live": "node supabase/tests/live_load_test.js",
-    "test:registration": "node supabase/tests/test_registration.js"
+    "test:registration": "node supabase/tests/test_registration.js",
+    "test:browser": "node tests/browser/browser_stress_runner.js smoke",
+    "test:browser:smoke": "node tests/browser/browser_stress_runner.js smoke",
+    "test:browser:load": "node tests/browser/browser_stress_runner.js load",
+    "test:browser:100": "node tests/browser/browser_stress_runner.js 100",
+    "test:realtime": "node tests/realtime/realtime_stress_test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.114.0",
@@ -29,12 +34,14 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
     "oxlint": "^1.79.0",
+    "playwright": "^1.62.1",
     "typescript": "~6.0.2",
     "vite": "^8.2.2"
   }

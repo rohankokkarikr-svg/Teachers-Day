@@ -123,14 +123,36 @@ export default function AdminCategories() {
 
       // Ensure every active category has valid assigned teachers (fallback to defaults if empty)
       const activeCats = (catRes?.data || localCats) as Category[];
+      let needsCloudSync = false;
       activeCats.forEach((c) => {
         if (!freshAssignments[c.id] || freshAssignments[c.id].length === 0) {
           freshAssignments[c.id] = getDefaultCategoryTeachers(c);
+          needsCloudSync = true;
         }
       });
 
       setCategoryAssignments(freshAssignments);
       setLocalStorage('td_category_teacher_assignments', freshAssignments);
+
+      // If remote category_teachers was empty, auto-sync to cloud
+      if (isSupabaseConfigured && (needsCloudSync || !ctRes?.data || ctRes.data.length === 0)) {
+        (async () => {
+          try {
+            await supabase.rpc('sync_system_defaults');
+            const recordsToSync: { category_id: string; teacher_id: string }[] = [];
+            Object.entries(freshAssignments).forEach(([cId, tIds]) => {
+              tIds.forEach((tId) => {
+                recordsToSync.push({ category_id: cId, teacher_id: tId });
+              });
+            });
+            if (recordsToSync.length > 0) {
+              await supabase.from('category_teachers').upsert(recordsToSync, { onConflict: 'category_id,teacher_id' });
+            }
+          } catch {
+            // Ignore background sync error
+          }
+        })();
+      }
     } catch {
       // Keep cached data
     } finally {

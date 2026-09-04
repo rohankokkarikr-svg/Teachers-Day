@@ -114,11 +114,23 @@ export default function AppreciationPage() {
 
     setIsSubmitting(true);
     try {
-      const studentIdentifier = user?.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : '33333333-0000-0000-0000-000000000001');
+      const isUUID = (str?: string | null): boolean =>
+        Boolean(str && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str));
 
+      let validStudentId: string | null = null;
+      if (isUUID(user?.id)) {
+        validStudentId = user!.id;
+      } else {
+        const savedProfile = getLocalStorage<{ id?: string } | null>('td_auth_profile', null);
+        if (savedProfile?.id && isUUID(savedProfile.id)) {
+          validStudentId = savedProfile.id;
+        }
+      }
+
+      const clientMsgId = 'msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6);
       const newMsg: AppreciationMessage = {
-        id: 'msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-        student_id: studentIdentifier,
+        id: clientMsgId,
+        student_id: validStudentId || null,
         message: message.trim(),
         status: 'approved', // Auto-approved for real-time display
         created_at: new Date().toISOString(),
@@ -132,13 +144,29 @@ export default function AppreciationPage() {
 
       if (isSupabaseConfigured) {
         try {
-          await supabase.from('appreciation_messages').insert({
-            student_id: studentIdentifier.includes('-') && studentIdentifier.length === 36 ? studentIdentifier : null,
+          const insertPayload: Record<string, unknown> = {
             message: message.trim(),
             status: 'approved',
-          });
-        } catch {
-          // Handled locally
+          };
+          if (validStudentId) {
+            insertPayload.student_id = validStudentId;
+          }
+
+          const { data: insertedData, error: insertErr } = await supabase
+            .from('appreciation_messages')
+            .insert(insertPayload)
+            .select()
+            .single();
+
+          if (!insertErr && insertedData) {
+            newMsg.id = insertedData.id;
+            setLocalStorage(
+              'td_admin_messages',
+              [newMsg, ...allMessages.filter((m) => m.id !== clientMsgId)]
+            );
+          }
+        } catch (err) {
+          console.warn('Appreciation message cloud persistence note:', err);
         }
       }
 

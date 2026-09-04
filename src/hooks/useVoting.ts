@@ -8,6 +8,7 @@ import {
   removeCategoryVoteLocally,
   getOrCreateDeviceId,
 } from '../lib/deviceId';
+import { captureError, captureEvent, captureMetric } from '../lib/monitoring';
 import type { SubmitVotesResponse, Profile } from '../types';
 
 export function useVoting(categoryId: string, userId?: string) {
@@ -241,6 +242,8 @@ export function useVoting(categoryId: string, userId?: string) {
 
         const deviceId = getOrCreateDeviceId();
 
+        const startTime = Date.now();
+
         // 4. ATOMIC DATABASE RPC: Execute the single transactional vote submission in PostgreSQL
         const rpcPromise = supabase.rpc('submit_votes', {
           p_category_id: categoryId,
@@ -251,13 +254,16 @@ export function useVoting(categoryId: string, userId?: string) {
         });
 
         const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
-          setTimeout(() => reject(new Error('Submission timed out. Please check your connection and retry.')), 8000)
+          setTimeout(() => reject(new Error('Submission timed out. Please check your internet connection and retry.')), 8000)
         );
 
         const { data: rpcRes, error: rpcErr } = (await Promise.race([rpcPromise, timeoutPromise])) as any;
+        const latency = Date.now() - startTime;
+        captureMetric('vote_submission_latency', latency, 'ms');
 
         if (rpcErr) {
-          console.error('submit_votes RPC Error:', rpcErr);
+          captureError(rpcErr, { categoryId, studentId, submissionId: clientSubmissionId }, 'voting');
+          captureEvent('vote_submitted_error', 'voting', { error: rpcErr.message, categoryId });
           // Keep pendingSubmissionIdRef for idempotent retry
           const errMsg = rpcErr.message || 'Submission failed. Please check your network and retry.';
           return { success: false, message: errMsg };
@@ -265,6 +271,7 @@ export function useVoting(categoryId: string, userId?: string) {
 
         if (rpcRes && rpcRes.success === false) {
           const errorCode = rpcRes.error_code || rpcRes.status;
+          captureEvent('vote_submitted_rejected', 'voting', { errorCode, categoryId });
 
           if (errorCode === 'DUPLICATE_SUBMISSION' || rpcRes.message?.includes('already submitted')) {
             recordLocalVote();
@@ -303,6 +310,7 @@ export function useVoting(categoryId: string, userId?: string) {
       // Record successful vote locally
       recordLocalVote();
       pendingSubmissionIdRef.current = null;
+      captureEvent('vote_submitted_success', 'voting', { categoryId });
 
       return {
         success: true,
@@ -310,9 +318,9 @@ export function useVoting(categoryId: string, userId?: string) {
         submission_id: clientSubmissionId,
       };
     } catch (err: unknown) {
-      console.error('Submit votes exception:', err);
+      captureError(err, { categoryId, submissionId: clientSubmissionId }, 'voting');
+      captureEvent('vote_submitted_error', 'voting', { categoryId });
       const msg = err instanceof Error ? err.message : 'Submission failed. Please try again.';
-      // Note: pendingSubmissionIdRef remains set so user can retry safely
       return {
         success: false,
         message: msg,

@@ -80,7 +80,7 @@ export type MessageStatus = 'pending' | 'approved' | 'rejected' | 'featured';
 
 export interface AppreciationMessage {
   id: string;
-  student_id: string;
+  student_id?: string | null;
   teacher_id?: string;
   category_id?: string;
   message: string;

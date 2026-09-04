@@ -44,6 +44,8 @@ export default function AdminUsers() {
   const [roleFilter, setRoleFilter] = useState<'all' | 'student' | 'admin'>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'revoked'>('all');
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 25;
 
   // Modals state
   const [singleLogoutTarget, setSingleLogoutTarget] = useState<UserSessionRecord | null>(null);
@@ -94,6 +96,11 @@ export default function AdminUsers() {
     };
   }, [loadData]);
 
+  // Reset pagination on filter change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, roleFilter, statusFilter]);
+
   // Derived metrics
   const totalUsers = sessions.length;
   const activeSessions = useMemo(() => sessions.filter((s) => s.is_active).length, [sessions]);
@@ -120,6 +127,12 @@ export default function AdminUsers() {
       return matchesSearch && matchesRole && matchesStatus;
     });
   }, [sessions, search, roleFilter, statusFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredSessions.length / pageSize));
+  const paginatedSessions = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredSessions.slice(start, start + pageSize);
+  }, [filteredSessions, currentPage, pageSize]);
 
   // Bulk selection helpers
   const handleToggleSelectUser = (userId: string) => {
@@ -529,12 +542,15 @@ export default function AdminUsers() {
                 Select All ({filteredSessions.filter((s) => s.role !== 'admin').length})
               </button>
             </div>
-            <span>Showing {filteredSessions.length} user session records</span>
+            <span>
+              Showing {filteredSessions.length > 0 ? (currentPage - 1) * pageSize + 1 : 0}–
+              {Math.min(currentPage * pageSize, filteredSessions.length)} of {filteredSessions.length} user session records
+            </span>
           </div>
 
           {/* List of Session Cards */}
           <AnimatePresence>
-            {filteredSessions.map((session) => {
+            {paginatedSessions.map((session) => {
               const isSelected = selectedUserIds.has(session.user_id);
               const isAdmin = session.role === 'admin';
               const votedCount = session.voted_categories_count || 0;
@@ -699,6 +715,31 @@ export default function AdminUsers() {
               );
             })}
           </AnimatePresence>
+
+          {/* Pagination Bar */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-2 pt-3 pb-1 border-t border-surface-800/60 text-xs text-surface-400 flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={currentPage <= 1}
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              >
+                ← Previous
+              </Button>
+              <span className="font-medium text-white">
+                Page {currentPage} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={currentPage >= totalPages}
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next →
+              </Button>
+            </div>
+          )}
         </div>
       )}
 

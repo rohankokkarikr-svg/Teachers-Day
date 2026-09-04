@@ -404,12 +404,15 @@ export async function recordUserLoginSession(profile: {
   return newSession;
 }
 
+const lastHeartbeatSentMap = new Map<string, number>();
+
 /**
- * Updates a user's last active heartbeat timestamp
+ * Updates a user's last active heartbeat timestamp (throttled to max 1 update per 25s)
  */
 export async function updateSessionHeartbeat(userId: string, deviceId?: string): Promise<void> {
   const dId = deviceId || getOrCreateDeviceId();
   const now = new Date().toISOString();
+  const nowMs = Date.now();
 
   const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
   const idx = localSessions.findIndex((s) => s.user_id === userId);
@@ -417,6 +420,13 @@ export async function updateSessionHeartbeat(userId: string, deviceId?: string):
     localSessions[idx].last_active_at = now;
     setLocalStorage(STORAGE_SESSIONS_KEY, localSessions);
   }
+
+  // Throttle remote DB heartbeat call (max once every 25 seconds per user)
+  const lastSent = lastHeartbeatSentMap.get(userId) || 0;
+  if (nowMs - lastSent < 25000) {
+    return;
+  }
+  lastHeartbeatSentMap.set(userId, nowMs);
 
   if (isSupabaseConfigured) {
     try {

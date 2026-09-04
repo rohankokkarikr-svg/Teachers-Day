@@ -1,15 +1,15 @@
 import { forwardRef } from 'react';
-import type { ButtonHTMLAttributes } from 'react';
-import { motion } from 'framer-motion';
+import { motion, type HTMLMotionProps } from 'framer-motion';
 import type { ButtonVariant, ButtonSize } from '../../types';
 
-interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ButtonProps extends Omit<HTMLMotionProps<'button'>, 'children'> {
   variant?: ButtonVariant;
   size?: ButtonSize;
   isLoading?: boolean;
   icon?: React.ReactNode;
   iconRight?: React.ReactNode;
   fullWidth?: boolean;
+  children?: React.ReactNode;
 }
 
 const variantClasses: Record<ButtonVariant, string> = {
@@ -51,7 +51,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           fullWidth ? 'w-full' : ''
         } ${className}`}
         disabled={disabled || isLoading}
-        {...(props as React.ComponentProps<typeof motion.button>)}
+        {...props}
       >
         {isLoading ? (
           <svg
@@ -88,3 +88,4 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
 Button.displayName = 'Button';
 
 export default Button;
+

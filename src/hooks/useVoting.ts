@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { VOTES_PER_CATEGORY } from '../lib/constants';
 import { getLocalStorage, setLocalStorage, removeLocalStorage } from '../lib/utils';
@@ -17,6 +17,9 @@ export function useVoting(categoryId: string, userId?: string) {
   const [hasVoted, setHasVoted] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Maintain idempotent submission ID across network retries
+  const pendingSubmissionIdRef = useRef<string | null>(null);
 
   // Check if student has already voted for this category
   const checkVotedStatus = useCallback(async () => {
@@ -50,9 +53,9 @@ export function useVoting(categoryId: string, userId?: string) {
         .eq('category_id', categoryId)
         .maybeSingle();
 
-      // 2-second timeout race to prevent hanging
+      // 3-second timeout to prevent hanging
       const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout')), 2000)
+        setTimeout(() => reject(new Error('Timeout')), 3000)
       );
 
       const { data, error } = (await Promise.race([queryPromise, timeoutPromise])) as any;
@@ -158,7 +161,7 @@ export function useVoting(categoryId: string, userId?: string) {
   const recordLocalVote = () => {
     setHasVoted(true);
 
-    // Record dynamic vote tallies for this category
+    // Record dynamic vote tallies for this category locally
     try {
       const existingTotals = getLocalStorage<Record<string, Record<string, number>>>('td_category_vote_totals', {});
       const catTotals = { ...(existingTotals[categoryId] || {}) };
@@ -177,9 +180,9 @@ export function useVoting(categoryId: string, userId?: string) {
     window.dispatchEvent(new Event('td_votes_updated'));
   };
 
-  // Submit votes atomically via PostgreSQL RPC function
+  // Submit votes atomically via single PostgreSQL RPC function
   const submitVotes = async (): Promise<SubmitVotesResponse> => {
-    // 1. Guard against concurrent clicks or multiple submissions
+    // 1. Guard against concurrent clicks
     if (isSubmitting) {
       return { success: false, message: 'Your vote is currently submitting. Please wait...' };
     }
@@ -202,11 +205,14 @@ export function useVoting(categoryId: string, userId?: string) {
 
     setIsSubmitting(true);
 
-    // 2. Generate client idempotency UUID to protect against retries or duplicate network requests
-    const clientSubmissionId =
-      typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
+    // 2. Generate or reuse client idempotency UUID to protect against retries or duplicate network requests
+    if (!pendingSubmissionIdRef.current) {
+      pendingSubmissionIdRef.current =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
+    }
+    const clientSubmissionId = pendingSubmissionIdRef.current;
 
     // 3. Format atomic vote allocation payload
     const votePayload = Object.entries(votes)
@@ -235,124 +241,38 @@ export function useVoting(categoryId: string, userId?: string) {
 
         const deviceId = getOrCreateDeviceId();
 
-        // Proactively ensure category_teachers mappings exist in Supabase for this category
-        try {
-          const mappingRecords = votePayload.map((v) => ({
-            category_id: categoryId,
-            teacher_id: v.teacher_id,
-          }));
-          await supabase
-            .from('category_teachers')
-            .upsert(mappingRecords, { onConflict: 'category_id,teacher_id' });
-        } catch {
-          // Ignore
-        }
-
         // 4. ATOMIC DATABASE RPC: Execute the single transactional vote submission in PostgreSQL
-        let rpcRes: any = null;
-        let rpcErr: any = null;
+        const rpcPromise = supabase.rpc('submit_votes', {
+          p_category_id: categoryId,
+          p_votes: votePayload,
+          p_student_id: studentId || null,
+          p_device_id: deviceId || null,
+          p_submission_id: clientSubmissionId,
+        });
 
-        try {
-          const rpcPromise = supabase.rpc('submit_votes', {
-            p_category_id: categoryId,
-            p_votes: votePayload,
-            p_student_id: studentId || null,
-            p_device_id: deviceId || null,
-            p_submission_id: clientSubmissionId,
-          });
+        const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
+          setTimeout(() => reject(new Error('Submission timed out. Please check your connection.')), 9000)
+        );
 
-          const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
-            setTimeout(() => reject(new Error('Submission timed out. Please check your connection.')), 8000)
-          );
-
-          const result = (await Promise.race([rpcPromise, timeoutPromise])) as any;
-          rpcRes = result.data;
-          rpcErr = result.error;
-
-          // If legacy signature is active before Migration 011 is run in SQL Editor
-          if (rpcErr && rpcErr.code === 'PGRST202') {
-            const fallbackPromise = supabase.rpc('submit_votes', {
-              p_category_id: categoryId,
-              p_votes: votePayload,
-              p_device_id: deviceId || null,
-            });
-            const fallbackResult = (await Promise.race([fallbackPromise, timeoutPromise])) as any;
-            rpcRes = fallbackResult.data;
-            rpcErr = fallbackResult.error;
-          }
-        } catch (timeoutErr: any) {
-          rpcErr = timeoutErr;
-        }
-
-        // If eligibility discrepancy occurs due to unseeded remote DB rows, perform direct resilient insert
-        if (
-          (rpcRes && rpcRes.success === false && rpcRes.message && rpcRes.message.includes('eligible for this category')) ||
-          (rpcErr && rpcErr.message && rpcErr.message.includes('eligible for this category'))
-        ) {
-          try {
-            // Auto-seed category_teachers in Supabase
-            const mappingRecords = votePayload.map((v) => ({
-              category_id: categoryId,
-              teacher_id: v.teacher_id,
-            }));
-            await supabase.from('category_teachers').upsert(mappingRecords, { onConflict: 'category_id,teacher_id' });
-
-            // Direct transactional fallback insertion
-            const { error: subErr } = await supabase.from('vote_submissions').insert({
-              id: clientSubmissionId,
-              student_id: studentId,
-              category_id: categoryId,
-              device_id: deviceId,
-              submitted_at: new Date().toISOString(),
-            });
-
-            if (!subErr) {
-              const itemRecords = votePayload.map((v) => ({
-                submission_id: clientSubmissionId,
-                teacher_id: v.teacher_id,
-                vote_count: v.vote_count,
-              }));
-              await supabase.from('vote_items').insert(itemRecords);
-
-              for (const v of votePayload) {
-                const { data: curTotal } = await supabase
-                  .from('vote_totals')
-                  .select('total_votes')
-                  .eq('category_id', categoryId)
-                  .eq('teacher_id', v.teacher_id)
-                  .maybeSingle();
-
-                const currentCount = curTotal?.total_votes || 0;
-                await supabase.from('vote_totals').upsert(
-                  {
-                    category_id: categoryId,
-                    teacher_id: v.teacher_id,
-                    total_votes: currentCount + v.vote_count,
-                    updated_at: new Date().toISOString(),
-                  },
-                  { onConflict: 'category_id,teacher_id' }
-                );
-              }
-
-              rpcRes = { success: true, message: 'Your vote has been recorded securely!' };
-              rpcErr = null;
-            }
-          } catch {
-            // Keep local
-          }
-        }
+        const { data: rpcRes, error: rpcErr } = (await Promise.race([rpcPromise, timeoutPromise])) as any;
 
         if (rpcErr) {
           console.error('submit_votes RPC Error:', rpcErr);
-          const errMsg = rpcErr.message || 'Submission failed. Please try again.';
+          const errMsg = rpcErr.message || 'Submission failed. Please check your network and try again.';
           return { success: false, message: errMsg };
         }
 
         if (rpcRes && rpcRes.success === false) {
-          if (rpcRes.message && rpcRes.message.includes('already submitted')) {
+          if (rpcRes.error_code === 'DUPLICATE_SUBMISSION' || rpcRes.message?.includes('already submitted')) {
             recordLocalVote();
+            pendingSubmissionIdRef.current = null;
           }
           return { success: false, message: rpcRes.message || 'Submission was rejected by the server.' };
+        }
+
+        // Idempotency: Success or already_processed
+        if (rpcRes && (rpcRes.success === true || rpcRes.status === 'already_processed')) {
+          pendingSubmissionIdRef.current = null;
         }
 
         // Broadcast instant notification for live leaderboards
@@ -374,6 +294,7 @@ export function useVoting(categoryId: string, userId?: string) {
 
       // Record successful vote locally
       recordLocalVote();
+      pendingSubmissionIdRef.current = null;
 
       return {
         success: true,

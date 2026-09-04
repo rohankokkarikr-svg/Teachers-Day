@@ -179,7 +179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [handleEnforceForcedLogout]);
 
-  // Realtime Remote Logout Listener (Supabase Broadcast + PostgreSQL changes + Local custom events)
+  // Realtime Remote Logout Listener & Scalable 30s Heartbeat
   useEffect(() => {
     const currentDeviceId = getOrCreateDeviceId();
 
@@ -200,14 +200,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     };
 
-    // 1. Heartbeat check every 3 seconds for active student sessions
+    // 1. Efficient 30-Second Heartbeat (Runs only when tab is visible)
     const interval = setInterval(() => {
-      const currentUser = userRef.current;
-      if (currentUser) {
-        checkLocalRevocation();
-        updateSessionHeartbeat(currentUser.id, currentDeviceId);
+      if (document.visibilityState === 'visible') {
+        const currentUser = userRef.current;
+        if (currentUser) {
+          checkLocalRevocation();
+          updateSessionHeartbeat(currentUser.id, currentDeviceId);
+        }
       }
-    }, 3000);
+    }, 30000);
 
     // 2. Custom local window event from Admin on same/local origin
     const handleLocalRevokeEvent = (e: Event) => {
@@ -334,70 +336,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     recordUserLoginSession(demoProfile).catch(() => {});
   };
 
-  const ADMIN_PASSCODE = '767614';
-
   const signIn = async (email: string, password: string) => {
+    const cleanEmail = email.trim();
     const cleanPass = password.trim();
 
-    // 1. Direct Admin Master Password Check (767614)
-    if (cleanPass === ADMIN_PASSCODE) {
-      const adminEmail = email.trim() || 'admin@college.edu';
+    if (!cleanEmail || !cleanPass) {
+      return { success: false, error: 'Please provide email and password.' };
+    }
+
+    if (!isSupabaseConfigured) {
+      // Mock / Offline Admin fallback when Supabase is unconfigured
       const adminId = 'a0000000-0000-0000-0000-000000000001';
-      const adminUser = { id: adminId, email: adminEmail } as User;
+      const adminUser = { id: adminId, email: cleanEmail } as User;
       const adminProfile: Profile = {
         id: adminId,
-        email: adminEmail,
+        email: cleanEmail,
         full_name: 'Administrator',
         role: 'admin',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
       setLocalDemoUser(adminUser, adminProfile);
-
-      if (isSupabaseConfigured) {
-        try {
-          await supabase.from('profiles').upsert(
-            {
-              id: adminId,
-              email: adminEmail,
-              full_name: 'Administrator',
-              role: 'admin',
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: 'id' }
-          );
-        } catch {
-          // Handled gracefully
-        }
-      }
-
       return { success: true };
     }
 
-    if (!isSupabaseConfigured) {
-      return {
-        success: false,
-        error: 'Invalid admin passcode. Please try again.',
-      };
-    }
-
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+      const { data: authData, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
         password: cleanPass,
       });
 
-      if (error) {
+      if (error || !authData?.user) {
         return {
           success: false,
-          error: 'Invalid admin credentials. Please try again.',
+          error: error?.message || 'Invalid administrator credentials. Please try again.',
         };
       }
+
+      // Verify admin role in database
+      const profileData = await fetchProfile(authData.user.id);
+      if (profileData && profileData.role !== 'admin') {
+        await supabase.auth.signOut();
+        return {
+          success: false,
+          error: 'Access Denied: This account does not possess administrator privileges.',
+        };
+      }
+
       return { success: true };
     } catch {
       return {
         success: false,
-        error: 'Invalid admin credentials. Please try again.',
+        error: 'Administrator authentication failed. Please try again.',
       };
     }
   };
@@ -412,42 +402,65 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const deviceId = getOrCreateDeviceId();
+    const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : 'Web Browser';
+
+    // 1. FAST ATOMIC LOGIN via register_or_get_student RPC
+    if (isSupabaseConfigured) {
+      try {
+        const { data: rpcRes, error: rpcErr } = await supabase.rpc('register_or_get_student', {
+          p_full_name: cleanName,
+          p_device_id: deviceId,
+          p_user_agent: userAgent,
+        });
+
+        if (!rpcErr && rpcRes) {
+          if (rpcRes.success === false) {
+            return {
+              success: false,
+              error: rpcRes.message || 'Login failed. Please check your credentials.',
+            };
+          }
+
+          const student = rpcRes.student;
+          bindDeviceToStudent(cleanName);
+
+          const studentUser = {
+            id: student.id,
+            email: student.email,
+            user_metadata: { full_name: student.full_name, role: 'student', device_id: deviceId },
+          } as unknown as User;
+
+          const studentProfile: Profile = {
+            id: student.id,
+            email: student.email,
+            full_name: student.full_name,
+            role: 'student',
+            device_id: deviceId,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+
+          setLocalDemoUser(studentUser, studentProfile);
+          return { success: true };
+        }
+      } catch {
+        // Fallback to local offline flow if RPC or network encounters temporary failure
+      }
+    }
+
+    // 2. Offline / Fallback Local Login Flow
     const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
     const email = `${slug}@student.college`;
 
-    // 1. Retrieve existing student ID if present
-    let studentId: string | null = null;
-
-    if (isSupabaseConfigured) {
-      try {
-        const { data: existingProfile } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('email', email)
-          .maybeSingle();
-
-        if (existingProfile?.id) {
-          studentId = existingProfile.id;
-        }
-      } catch {
-        // Fallback to local
-      }
-    }
-
+    let studentId: string | null = localStorage.getItem(`td_student_id_${slug}`);
     if (!studentId) {
-      const storedId = localStorage.getItem(`td_student_id_${slug}`);
-      if (storedId) {
-        studentId = storedId;
-      } else {
-        studentId =
-          typeof crypto !== 'undefined' && crypto.randomUUID
-            ? crypto.randomUUID()
-            : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
-        localStorage.setItem(`td_student_id_${slug}`, studentId);
-      }
+      studentId =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
+      localStorage.setItem(`td_student_id_${slug}`, studentId);
     }
 
-    // 2. CRITICAL ACCESS CHECK: Check if user, name, email, or device was revoked by admin
     const accessCheck = await checkUserAccessAllowed({
       userId: studentId,
       name: cleanName,
@@ -458,48 +471,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!accessCheck.allowed) {
       return {
         success: false,
-        error:
-          accessCheck.reason ||
-          'Access Denied: Your account access has been revoked by the administrator. You cannot log in until an administrator grants you access.',
+        error: accessCheck.reason || 'Access Denied: Your account access has been revoked by the administrator.',
       };
     }
 
-    // 3. Anti-Abuse: Check local & cookie device binding
     const deviceCheck = isDeviceBoundToDifferentStudent(cleanName);
     if (deviceCheck.isBlocked && deviceCheck.boundName) {
       return {
         success: false,
-        error: `This device is already registered to "${deviceCheck.boundName}". Only 1 student account is permitted per device to ensure voting integrity.`,
+        error: `This device is already registered to "${deviceCheck.boundName}". Only 1 student account is permitted per device.`,
       };
     }
 
-    // 4. Anti-Abuse: Check cloud device binding in Supabase
-    if (isSupabaseConfigured) {
-      try {
-        const { data: cloudProfiles } = await supabase
-          .from('profiles')
-          .select('full_name')
-          .eq('device_id', deviceId)
-          .limit(1);
-
-        if (cloudProfiles && cloudProfiles.length > 0) {
-          const registeredName = cloudProfiles[0].full_name;
-          const currentSlug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
-          const registeredSlug = (registeredName || '').toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
-
-          if (registeredSlug && registeredSlug !== currentSlug) {
-            return {
-              success: false,
-              error: `This device is already registered to "${registeredName}". Only 1 account is permitted per device.`,
-            };
-          }
-        }
-      } catch {
-        // Fallback to local device binding check
-      }
-    }
-
-    // 5. Bind this device to the student name
     bindDeviceToStudent(cleanName);
 
     const studentUser = {
@@ -519,38 +502,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     setLocalDemoUser(studentUser, studentProfile);
-
-    // Track registered student locally
-    try {
-      const rawReg = localStorage.getItem('td_registered_students');
-      const regList: string[] = rawReg ? JSON.parse(rawReg) : [];
-      if (!regList.includes(cleanName)) {
-        regList.push(cleanName);
-        localStorage.setItem('td_registered_students', JSON.stringify(regList));
-      }
-    } catch {
-      // Ignore
-    }
-
-    // Save/Update profile to Supabase database (idempotent upsert)
-    if (isSupabaseConfigured) {
-      try {
-        await supabase.from('profiles').upsert(
-          {
-            id: studentId,
-            email,
-            full_name: cleanName,
-            role: 'student',
-            device_id: deviceId,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'id' }
-        );
-      } catch {
-        // Handled gracefully
-      }
-    }
-
     return { success: true };
   };
 

@@ -14,6 +14,7 @@ export default function LoginPage() {
   const boundStudent = getDeviceBoundStudent();
   const [fullName, setFullName] = useState(() => boundStudent?.name || '');
   const [isAdminMode, setIsAdminMode] = useState(false);
+  const [adminEmail, setAdminEmail] = useState('admin@college.edu');
   const [adminPassword, setAdminPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -71,14 +72,19 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
 
+    if (!adminEmail.trim()) {
+      setError('Please enter the admin email address');
+      return;
+    }
+
     if (!adminPassword) {
-      setError('Please enter the admin passcode');
+      setError('Please enter the admin password');
       return;
     }
 
     setIsLoading(true);
     try {
-      const result = await signIn('admin@college.edu', adminPassword);
+      const result = await signIn(adminEmail.trim(), adminPassword);
       if (result.success) {
         toast.success('Admin Authenticated!', 'Welcome to Admin Dashboard.');
         navigate(ROUTES.ADMIN);
@@ -220,10 +226,23 @@ export default function LoginPage() {
             </Button>
           </form>
         ) : (
-          /* Admin Passcode Form */
+          /* Admin Login Form */
           <form onSubmit={handleAdminSubmit} className="glass-card p-6 space-y-4">
             <Input
-              label="Admin Passcode"
+              label="Admin Email"
+              type="email"
+              placeholder="admin@college.edu"
+              value={adminEmail}
+              onChange={(e) => {
+                setAdminEmail(e.target.value);
+                setError('');
+              }}
+              icon={<User size={16} />}
+              autoComplete="email"
+            />
+
+            <Input
+              label="Admin Password"
               type="password"
               placeholder="••••••••"
               value={adminPassword}

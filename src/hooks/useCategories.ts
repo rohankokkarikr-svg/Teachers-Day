@@ -39,7 +39,7 @@ export function useCategories(userId?: string) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchCategories = useCallback(async () => {
+  const fetchCategories = useCallback(async (isSilent = false) => {
     const userVotedArray = getUserSubmittedCategories(userId);
     const localVoted = new Set(userVotedArray);
     const raw = getAllCategories().filter((c) => c.is_active !== false);
@@ -59,11 +59,11 @@ export function useCategories(userId?: string) {
     setCategories(formattedLocal);
 
     if (!isSupabaseConfigured) {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
       return;
     }
 
-    setIsLoading(true);
+    if (!isSilent) setIsLoading(true);
     setError(null);
 
     try {
@@ -134,7 +134,7 @@ export function useCategories(userId?: string) {
     } catch {
       // Keep local categories
     } finally {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
     }
   }, [userId]);
 
@@ -142,7 +142,7 @@ export function useCategories(userId?: string) {
     fetchCategories();
 
     const handleUpdate = () => {
-      fetchCategories();
+      fetchCategories(true);
     };
 
     window.addEventListener('td_admin_categories_updated', handleUpdate);
@@ -151,21 +151,21 @@ export function useCategories(userId?: string) {
     window.addEventListener('td_system_reset', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
-    // 10-second regular database polling loop
+    // Silent background database polling
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        fetchCategories();
+        fetchCategories(true);
       }
     }, 10000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        fetchCategories();
+        fetchCategories(true);
       }
     };
 
     const handleOnline = () => {
-      fetchCategories();
+      fetchCategories(true);
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);

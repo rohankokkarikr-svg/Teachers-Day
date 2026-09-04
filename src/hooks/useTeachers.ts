@@ -46,7 +46,7 @@ export function useTeachers(categoryId?: string) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchTeachers = useCallback(async () => {
+  const fetchTeachers = useCallback(async (isSilent = false) => {
     const localAll = getAllTeachers().filter((t) => t.is_active !== false);
     const assignments = getLocalStorage<Record<string, string[]>>(
       'td_category_teacher_assignments',
@@ -61,11 +61,11 @@ export function useTeachers(categoryId?: string) {
     setTeachers(initialList);
 
     if (!isSupabaseConfigured) {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
       return;
     }
 
-    setIsLoading(true);
+    if (!isSilent) setIsLoading(true);
     setError(null);
 
     try {
@@ -124,7 +124,7 @@ export function useTeachers(categoryId?: string) {
     } catch {
       // Keep local cached teachers
     } finally {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
     }
   }, [categoryId]);
 
@@ -132,17 +132,17 @@ export function useTeachers(categoryId?: string) {
     fetchTeachers();
 
     const handleUpdate = () => {
-      fetchTeachers();
+      fetchTeachers(true);
     };
 
     window.addEventListener('td_admin_teachers_updated', handleUpdate);
     window.addEventListener('td_admin_categories_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
-    // 10-second regular database polling loop
+    // Silent background database polling
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        fetchTeachers();
+        fetchTeachers(true);
       }
     }, 10000);
 

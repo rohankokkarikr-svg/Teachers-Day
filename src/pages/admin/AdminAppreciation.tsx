@@ -21,14 +21,16 @@ export default function AdminAppreciation() {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
 
-  const fetchMessages = useCallback(async () => {
+  const fetchMessages = useCallback(async (isSilent = false) => {
     const local = getLocalStorage<AppreciationMessage[]>('td_admin_messages', []);
     setMessages(local);
 
     if (!isSupabaseConfigured) {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
       return;
     }
+
+    if (!isSilent) setIsLoading(true);
 
     try {
       const queryPromise = supabase
@@ -50,7 +52,7 @@ export default function AdminAppreciation() {
     } catch {
       // Keep local messages
     } finally {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
     }
   }, []);
 
@@ -58,16 +60,16 @@ export default function AdminAppreciation() {
     fetchMessages();
 
     const handleUpdate = () => {
-      fetchMessages();
+      fetchMessages(true);
     };
 
     window.addEventListener('td_appreciation_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
-    // 10-second regular database polling loop
+    // Silent background database polling
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        fetchMessages();
+        fetchMessages(true);
       }
     }, 10000);
 

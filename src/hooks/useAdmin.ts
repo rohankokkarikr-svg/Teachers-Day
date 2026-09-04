@@ -91,7 +91,7 @@ export function useAdmin() {
   };
 
   // Fetch admin dashboard overview stats
-  const fetchDashboardData = useCallback(async () => {
+  const fetchDashboardData = useCallback(async (isSilent = false) => {
     // Read local real voting tallies
     const localTotals = getLocalStorage<Record<string, Record<string, number>>>('td_category_vote_totals', {});
     let localTotalVotes = 0;
@@ -144,11 +144,11 @@ export function useAdmin() {
       setSettings(storedSettings);
       setStats(computedLocalStats);
       setRecentActions(storedActions);
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
       return;
     }
 
-    setIsLoading(true);
+    if (!isSilent) setIsLoading(true);
     setError(null);
 
     try {
@@ -224,7 +224,7 @@ export function useAdmin() {
     } catch {
       setStats(computedLocalStats);
     } finally {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
     }
   }, []);
 
@@ -232,7 +232,7 @@ export function useAdmin() {
     fetchDashboardData();
 
     const handleUpdate = () => {
-      fetchDashboardData();
+      fetchDashboardData(true);
     };
 
     window.addEventListener('td_votes_updated', handleUpdate);
@@ -242,10 +242,10 @@ export function useAdmin() {
     window.addEventListener('td_admin_categories_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
-    // 10-second regular database polling loop
+    // Silent background database polling loop
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        fetchDashboardData();
+        fetchDashboardData(true);
       }
     }, 10000);
 

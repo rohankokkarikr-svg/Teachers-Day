@@ -2,7 +2,11 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getUserSubmittedCategories, syncUserSubmittedCategories } from '../lib/deviceId';
 import { getLocalStorage, setLocalStorage } from '../lib/utils';
-import { INITIAL_CATEGORIES_DATA, INITIAL_CATEGORY_ASSIGNMENTS } from '../data/initialCategories';
+import {
+  INITIAL_CATEGORIES_DATA,
+  getCategoryTeacherAssignments,
+  getDefaultCategoryTeachers,
+} from '../data/initialCategories';
 import type { Category } from '../types';
 
 export interface CategoryWithStatus extends Category {
@@ -25,16 +29,16 @@ export function useCategories(userId?: string) {
     raw.sort((a, b) => a.display_order - b.display_order);
     const userVotedArray = getUserSubmittedCategories(userId);
     const localVoted = new Set(userVotedArray);
-    const assignments = getLocalStorage<Record<string, string[]>>(
-      'td_category_teacher_assignments',
-      INITIAL_CATEGORY_ASSIGNMENTS
-    );
+    const assignments = getCategoryTeacherAssignments();
 
-    return raw.map((cat) => ({
-      ...cat,
-      voted: localVoted.has(cat.id),
-      teacherCount: assignments[cat.id] ? assignments[cat.id].length : 0,
-    }));
+    return raw.map((cat) => {
+      const assignedList = assignments[cat.id] || getDefaultCategoryTeachers(cat);
+      return {
+        ...cat,
+        voted: localVoted.has(cat.id),
+        teacherCount: assignedList.length,
+      };
+    });
   });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,23 +64,23 @@ export function useCategories(userId?: string) {
     if (!isSilent) setIsLoading(true);
     setError(null);
 
-    // If local state is empty, initialize from cache
-    setCategories((prev) => {
-      if (prev.length > 0) return prev;
-      const userVotedArray = getUserSubmittedCategories(userId);
-      const localVoted = new Set(userVotedArray);
-      const raw = getAllCategories().filter((c) => c.is_active !== false);
-      raw.sort((a, b) => a.display_order - b.display_order);
-      const assignments = getLocalStorage<Record<string, string[]>>(
-        'td_category_teacher_assignments',
-        INITIAL_CATEGORY_ASSIGNMENTS
-      );
-      return raw.map((c) => ({
+    // Initial cache sync
+    const userVotedArray = getUserSubmittedCategories(userId);
+    const localVoted = new Set(userVotedArray);
+    const raw = getAllCategories().filter((c) => c.is_active !== false);
+    raw.sort((a, b) => a.display_order - b.display_order);
+    const assignments = getCategoryTeacherAssignments();
+
+    const localFormatted = raw.map((c) => {
+      const assignedList = assignments[c.id] || getDefaultCategoryTeachers(c);
+      return {
         ...c,
         voted: localVoted.has(c.id),
-        teacherCount: assignments[c.id] ? assignments[c.id].length : 0,
-      }));
+        teacherCount: assignedList.length,
+      };
     });
+
+    setCategories((prev) => (areCategoriesEqual(prev, localFormatted) ? prev : localFormatted));
 
     if (!isSupabaseConfigured) {
       if (!isSilent) setIsLoading(false);
@@ -110,31 +114,35 @@ export function useCategories(userId?: string) {
       if (catRes?.data && catRes.data.length > 0) {
         setLocalStorage('td_admin_categories', catRes.data);
 
-        const assignments = getLocalStorage<Record<string, string[]>>(
-          'td_category_teacher_assignments',
-          INITIAL_CATEGORY_ASSIGNMENTS
-        );
+        const currentAssignments = getCategoryTeacherAssignments();
+        const freshAssignments: Record<string, string[]> = { ...currentAssignments };
 
-        // Group category assignments
-        const teacherCounts: Record<string, number> = {};
-        const freshAssignments: Record<string, string[]> = { ...assignments };
-
-        // Initialize fresh assignments for loaded categories
-        catRes.data.forEach((cat: Category) => {
-          freshAssignments[cat.id] = [];
-        });
-
-        if (ctRes?.data) {
+        // Only populate from Supabase if ctRes has actual data
+        if (ctRes?.data && Array.isArray(ctRes.data) && ctRes.data.length > 0) {
+          const remoteGroups: Record<string, string[]> = {};
           ctRes.data.forEach((ct: { category_id: string; teacher_id: string }) => {
-            teacherCounts[ct.category_id] = (teacherCounts[ct.category_id] || 0) + 1;
-            if (!freshAssignments[ct.category_id]) {
-              freshAssignments[ct.category_id] = [];
+            if (!remoteGroups[ct.category_id]) {
+              remoteGroups[ct.category_id] = [];
             }
-            if (!freshAssignments[ct.category_id].includes(ct.teacher_id)) {
-              freshAssignments[ct.category_id].push(ct.teacher_id);
+            if (!remoteGroups[ct.category_id].includes(ct.teacher_id)) {
+              remoteGroups[ct.category_id].push(ct.teacher_id);
+            }
+          });
+
+          // Only override categories that have remote records
+          Object.entries(remoteGroups).forEach(([catId, tIds]) => {
+            if (tIds.length > 0) {
+              freshAssignments[catId] = tIds;
             }
           });
         }
+
+        // Ensure all loaded categories have non-empty nominees
+        catRes.data.forEach((cat: Category) => {
+          if (!freshAssignments[cat.id] || freshAssignments[cat.id].length === 0) {
+            freshAssignments[cat.id] = getDefaultCategoryTeachers(cat);
+          }
+        });
 
         setLocalStorage('td_category_teacher_assignments', freshAssignments);
 
@@ -145,11 +153,14 @@ export function useCategories(userId?: string) {
           syncUserSubmittedCategories(Array.from(votedCategoryIds), userId);
         }
 
-        const formatted: CategoryWithStatus[] = catRes.data.map((cat: any) => ({
-          ...cat,
-          voted: votedCategoryIds.has(cat.id),
-          teacherCount: teacherCounts[cat.id] ?? 0,
-        }));
+        const formatted: CategoryWithStatus[] = catRes.data.map((cat: any) => {
+          const assignedList = freshAssignments[cat.id] || getDefaultCategoryTeachers(cat);
+          return {
+            ...cat,
+            voted: votedCategoryIds.has(cat.id),
+            teacherCount: assignedList.length,
+          };
+        });
 
         setCategories((prev) => (areCategoriesEqual(prev, formatted) ? prev : formatted));
       }
@@ -203,4 +214,3 @@ export function useCategories(userId?: string) {
     refetch: fetchCategories,
   };
 }
-

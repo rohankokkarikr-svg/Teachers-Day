@@ -1,4 +1,5 @@
 import type { Category } from '../types';
+import { getLocalStorage } from '../lib/utils';
 
 export const INITIAL_CATEGORIES_DATA: Category[] = [
   {
@@ -102,8 +103,8 @@ export const TEACHING_FACULTY_IDS: string[] = [
 ];
 
 export const NON_TECHNICAL_STAFF_IDS: string[] = [
-  'f0e5af11-e1de-4a6f-975e-7c0e193693c0', // Prof Ravi Bennoli.
-  'b2c9cbda-5158-4e64-8b85-9b245625f864', // Miss Mamata Mattikalli.
+  'f0e5af11-e1de-4a6f-975e-7c0e193693c0', // Mr Ravi Bennole.
+  'b2c9cbda-5158-4e64-8b85-9b245625f864', // Mis Mamata Mattikalli.
   'bed87c04-9a5a-46ef-bb0b-4fba71238538', // Mr Mahantesh Manaji.
   '3208c751-30bd-4898-8f17-e22d7fa2e3d5', // Mr Sidrayi Nayak.
 ];
@@ -118,3 +119,46 @@ export const INITIAL_CATEGORY_ASSIGNMENTS: Record<string, string[]> = {
   '11111111-0000-0000-0000-000000000007': [...TEACHING_FACULTY_IDS],
   '0bb4bcc1-fdfb-4c8b-bfcf-6ecb453535b0': [...NON_TECHNICAL_STAFF_IDS],
 };
+
+/**
+ * Returns default nominee IDs for any category based on whether it is Non-Technical or Faculty
+ */
+export function getDefaultCategoryTeachers(category?: { id?: string; name?: string; description?: string } | null): string[] {
+  if (!category) return [...TEACHING_FACULTY_IDS];
+  const name = (category.name || '').toLowerCase();
+  const desc = (category.description || '').toLowerCase();
+  const id = category.id || '';
+
+  if (
+    id === '0bb4bcc1-fdfb-4c8b-bfcf-6ecb453535b0' ||
+    name.includes('non-technical') ||
+    name.includes('non - technical') ||
+    name.includes('staff') ||
+    desc.includes('non-technical')
+  ) {
+    return [...NON_TECHNICAL_STAFF_IDS];
+  }
+
+  return [...TEACHING_FACULTY_IDS];
+}
+
+/**
+ * Robustly reads category assignments, ensuring no category is ever empty unless explicitly configured
+ */
+export function getCategoryTeacherAssignments(): Record<string, string[]> {
+  const stored = getLocalStorage<Record<string, string[]>>(
+    'td_category_teacher_assignments',
+    INITIAL_CATEGORY_ASSIGNMENTS
+  );
+
+  const assignments: Record<string, string[]> = { ...INITIAL_CATEGORY_ASSIGNMENTS, ...stored };
+
+  // Ensure default categories always have non-empty candidate list
+  INITIAL_CATEGORIES_DATA.forEach((cat) => {
+    if (!assignments[cat.id] || assignments[cat.id].length === 0) {
+      assignments[cat.id] = getDefaultCategoryTeachers(cat);
+    }
+  });
+
+  return assignments;
+}

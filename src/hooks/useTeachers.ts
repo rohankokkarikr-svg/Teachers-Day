@@ -2,7 +2,10 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getLocalStorage, setLocalStorage } from '../lib/utils';
 import { INITIAL_TEACHERS_DATA } from '../data/initialTeachers';
-import { INITIAL_CATEGORY_ASSIGNMENTS } from '../data/initialCategories';
+import {
+  getCategoryTeacherAssignments,
+  getDefaultCategoryTeachers,
+} from '../data/initialCategories';
 import type { Teacher } from '../types';
 
 export const INITIAL_FALLBACK_TEACHERS: Teacher[] = INITIAL_TEACHERS_DATA;
@@ -105,8 +108,8 @@ export function getAllTeachers(): Teacher[] {
     const resolvedPhoto = resolvePermanentPhoto(existing || initT);
     return {
       ...(existing || initT),
-      name: initT.name, // keep official formatted name
-      department: initT.department, // keep official department ('BCA' vs 'Non-Technical Staff')
+      name: initT.name,
+      department: initT.department,
       photo_url: resolvedPhoto,
       is_active: existing ? existing.is_active : initT.is_active,
     };
@@ -125,20 +128,47 @@ export function getAllTeachers(): Teacher[] {
   return mergedList;
 }
 
+/**
+ * Helper to filter teachers for a specific category safely
+ */
+function getTeachersForCategory(allTeachers: Teacher[], categoryId?: string): Teacher[] {
+  const activeAll = allTeachers.filter((t) => t.is_active !== false);
+  if (!categoryId) return activeAll;
+
+  const assignments = getCategoryTeacherAssignments();
+  let assignedIds = assignments[categoryId];
+
+  if (!assignedIds || assignedIds.length === 0) {
+    assignedIds = getDefaultCategoryTeachers({ id: categoryId });
+  }
+
+  const set = new Set(assignedIds);
+  const filtered = activeAll.filter((t) => set.has(t.id));
+
+  // Robust fallback if filtered array is empty
+  if (filtered.length === 0) {
+    const isNonTechCategory = categoryId === '0bb4bcc1-fdfb-4c8b-bfcf-6ecb453535b0';
+    if (isNonTechCategory) {
+      return activeAll.filter(
+        (t) =>
+          t.department === 'Non-Technical Staff' ||
+          t.department?.toLowerCase().includes('non-technical')
+      );
+    }
+    return activeAll.filter(
+      (t) =>
+        t.department !== 'Non-Technical Staff' &&
+        !t.department?.toLowerCase().includes('non-technical')
+    );
+  }
+
+  return filtered;
+}
+
 export function useTeachers(categoryId?: string) {
   const [teachers, setTeachers] = useState<Teacher[]>(() => {
-    const all = getAllTeachers().filter((t) => t.is_active !== false);
-    if (!categoryId) return all;
-    const assignments = getLocalStorage<Record<string, string[]>>(
-      'td_category_teacher_assignments',
-      INITIAL_CATEGORY_ASSIGNMENTS
-    );
-    const catAssigned = assignments[categoryId];
-    if (catAssigned !== undefined) {
-      const set = new Set(catAssigned);
-      return all.filter((t) => set.has(t.id));
-    }
-    return all;
+    const all = getAllTeachers();
+    return getTeachersForCategory(all, categoryId);
   });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -163,20 +193,10 @@ export function useTeachers(categoryId?: string) {
     if (!isSilent) setIsLoading(true);
     setError(null);
 
-    // Initialize/sync from ground truth local cache
-    const localAll = getAllTeachers().filter((t) => t.is_active !== false);
-    const assignments = getLocalStorage<Record<string, string[]>>(
-      'td_category_teacher_assignments',
-      INITIAL_CATEGORY_ASSIGNMENTS
-    );
-    const catAssigned = categoryId ? assignments[categoryId] : undefined;
-    const filteredLocal = categoryId
-      ? catAssigned !== undefined
-        ? localAll.filter((t) => new Set(catAssigned).has(t.id))
-        : localAll
-      : localAll;
-
-    setTeachers((prev) => (areTeachersEqual(prev, filteredLocal) ? prev : filteredLocal));
+    // Initial cache state
+    const localAll = getAllTeachers();
+    const localFiltered = getTeachersForCategory(localAll, categoryId);
+    setTeachers((prev) => (areTeachersEqual(prev, localFiltered) ? prev : localFiltered));
 
     if (!isSupabaseConfigured) {
       if (!isSilent) setIsLoading(false);
@@ -226,28 +246,25 @@ export function useTeachers(categoryId?: string) {
         });
 
         setLocalStorage('td_admin_teachers', completeMerged);
-        const liveAll = completeMerged.filter((t: Teacher) => t.is_active !== false);
 
         let nextTeachers: Teacher[] = [];
         if (!categoryId) {
-          nextTeachers = liveAll;
+          nextTeachers = completeMerged.filter((t: Teacher) => t.is_active !== false);
         } else {
-          const freshAssignments = getLocalStorage<Record<string, string[]>>(
-            'td_category_teacher_assignments',
-            INITIAL_CATEGORY_ASSIGNMENTS
-          );
-          if (assignmentsRes?.data !== null && assignmentsRes?.data !== undefined && !assignmentsRes.error) {
+          const freshAssignments = getCategoryTeacherAssignments();
+
+          // Only override from Supabase if assignmentsRes has actual rows
+          if (
+            assignmentsRes?.data &&
+            Array.isArray(assignmentsRes.data) &&
+            assignmentsRes.data.length > 0
+          ) {
             const assignedIds: string[] = assignmentsRes.data.map((ct: { teacher_id: string }) => ct.teacher_id);
             freshAssignments[categoryId] = assignedIds;
             setLocalStorage('td_category_teacher_assignments', freshAssignments);
-            const liveSet = new Set(assignedIds);
-            nextTeachers = liveAll.filter((t: Teacher) => liveSet.has(t.id));
-          } else if (freshAssignments[categoryId] !== undefined) {
-            const liveSet = new Set(freshAssignments[categoryId]);
-            nextTeachers = liveAll.filter((t: Teacher) => liveSet.has(t.id));
-          } else {
-            nextTeachers = liveAll;
           }
+
+          nextTeachers = getTeachersForCategory(completeMerged, categoryId);
         }
 
         setTeachers((prev) => (areTeachersEqual(prev, nextTeachers) ? prev : nextTeachers));

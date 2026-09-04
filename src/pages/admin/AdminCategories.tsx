@@ -22,7 +22,7 @@ import { getLocalStorage, setLocalStorage } from '../../lib/utils';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useAdmin } from '../../hooks/useAdmin';
 import { toast } from '../../components/ui/Toast';
-import { INITIAL_CATEGORIES_DATA, INITIAL_CATEGORY_ASSIGNMENTS } from '../../data/initialCategories';
+import { INITIAL_CATEGORIES_DATA, getCategoryTeacherAssignments, getDefaultCategoryTeachers } from '../../data/initialCategories';
 import { getAllTeachers, resolvePermanentPhoto } from '../../hooks/useTeachers';
 import type { Category, Teacher } from '../../types';
 
@@ -32,7 +32,7 @@ export default function AdminCategories() {
   );
   const [teachers, setTeachers] = useState<Teacher[]>(() => getAllTeachers());
   const [categoryAssignments, setCategoryAssignments] = useState<Record<string, string[]>>(() =>
-    getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', INITIAL_CATEGORY_ASSIGNMENTS)
+    getCategoryTeacherAssignments()
   );
 
   const [isLoading, setIsLoading] = useState(false);
@@ -59,10 +59,7 @@ export default function AdminCategories() {
   const fetchData = useCallback(async () => {
     const localCats = getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES_DATA);
     const localTeachers = getAllTeachers();
-    const localAssignments = getLocalStorage<Record<string, string[]>>(
-      'td_category_teacher_assignments',
-      INITIAL_CATEGORY_ASSIGNMENTS
-    );
+    const localAssignments = getCategoryTeacherAssignments();
 
     setCategories(localCats);
     setTeachers(localTeachers);
@@ -100,23 +97,37 @@ export default function AdminCategories() {
         setLocalStorage('td_admin_teachers', resolvedTeachers);
       }
 
-      // Sync category-teacher assignments
-      const freshAssignments: Record<string, string[]> = {};
-      const activeCats = (catRes?.data || localCats) as Category[];
-      activeCats.forEach((c) => {
-        freshAssignments[c.id] = [];
-      });
+      // Sync category-teacher assignments safely
+      const currentAssignments = getCategoryTeacherAssignments();
+      const freshAssignments: Record<string, string[]> = { ...currentAssignments };
 
-      if (ctRes?.data) {
+      // Only populate from Supabase if ctRes has actual data
+      if (ctRes?.data && Array.isArray(ctRes.data) && ctRes.data.length > 0) {
+        const remoteMap: Record<string, string[]> = {};
         ctRes.data.forEach((ct: { category_id: string; teacher_id: string }) => {
-          if (!freshAssignments[ct.category_id]) {
-            freshAssignments[ct.category_id] = [];
+          if (!remoteMap[ct.category_id]) {
+            remoteMap[ct.category_id] = [];
           }
-          if (!freshAssignments[ct.category_id].includes(ct.teacher_id)) {
-            freshAssignments[ct.category_id].push(ct.teacher_id);
+          if (!remoteMap[ct.category_id].includes(ct.teacher_id)) {
+            remoteMap[ct.category_id].push(ct.teacher_id);
+          }
+        });
+
+        // Only override categories that have remote records
+        Object.entries(remoteMap).forEach(([cId, tIds]) => {
+          if (tIds.length > 0) {
+            freshAssignments[cId] = tIds;
           }
         });
       }
+
+      // Ensure every active category has valid assigned teachers (fallback to defaults if empty)
+      const activeCats = (catRes?.data || localCats) as Category[];
+      activeCats.forEach((c) => {
+        if (!freshAssignments[c.id] || freshAssignments[c.id].length === 0) {
+          freshAssignments[c.id] = getDefaultCategoryTeachers(c);
+        }
+      });
 
       setCategoryAssignments(freshAssignments);
       setLocalStorage('td_category_teacher_assignments', freshAssignments);
@@ -131,10 +142,7 @@ export default function AdminCategories() {
     fetchData();
 
     const handleSync = () => {
-      const localAssignments = getLocalStorage<Record<string, string[]>>(
-        'td_category_teacher_assignments',
-        INITIAL_CATEGORY_ASSIGNMENTS
-      );
+      const localAssignments = getCategoryTeacherAssignments();
       setCategoryAssignments(localAssignments);
     };
 
@@ -172,7 +180,8 @@ export default function AdminCategories() {
     setAssignSearch('');
     setAssignDeptFilter('ALL');
 
-    const currentAssignedList = categoryAssignments[c.id] || [];
+    const assignments = getCategoryTeacherAssignments();
+    const currentAssignedList = assignments[c.id] || getDefaultCategoryTeachers(c);
     setAssignedTeacherIds(new Set(currentAssignedList));
     setIsAssignModalOpen(true);
 
@@ -184,7 +193,7 @@ export default function AdminCategories() {
         .select('teacher_id')
         .eq('category_id', c.id);
 
-      if (data !== null && data !== undefined) {
+      if (data && Array.isArray(data) && data.length > 0) {
         const ids = data.map((ct: { teacher_id: string }) => ct.teacher_id);
         setAssignedTeacherIds(new Set(ids));
         setCategoryAssignments((prev) => {

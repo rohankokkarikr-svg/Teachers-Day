@@ -2,7 +2,10 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getLocalStorage, setLocalStorage } from '../lib/utils';
 import { getAllTeachers } from './useTeachers';
-import { INITIAL_CATEGORY_ASSIGNMENTS } from '../data/initialCategories';
+import {
+  getCategoryTeacherAssignments,
+  getDefaultCategoryTeachers,
+} from '../data/initialCategories';
 import type { LeaderboardEntry, VotingSettings } from '../types';
 
 /**
@@ -15,12 +18,9 @@ export function getCategoryFallbackLeaderboard(categoryId?: string): Leaderboard
   const teachers = getAllTeachers().filter((t) => t.is_active !== false);
 
   // Filter by category assignment if configured
-  const assignments = getLocalStorage<Record<string, string[]>>(
-    'td_category_teacher_assignments',
-    INITIAL_CATEGORY_ASSIGNMENTS
-  );
-  const catAssigned = assignments[catId];
-  const categoryTeachers = catAssigned !== undefined
+  const assignments = getCategoryTeacherAssignments();
+  const catAssigned = assignments[catId] || getDefaultCategoryTeachers({ id: catId });
+  const categoryTeachers = catAssigned && catAssigned.length > 0
     ? teachers.filter((t) => new Set(catAssigned).has(t.id))
     : teachers;
 
@@ -158,12 +158,9 @@ export function useRealtime(categoryId?: string) {
       }
 
       const allTeachers = getAllTeachers().filter((t) => t.is_active !== false);
-      const assignments = getLocalStorage<Record<string, string[]>>(
-        'td_category_teacher_assignments',
-        INITIAL_CATEGORY_ASSIGNMENTS
-      );
-      const catAssigned = assignments[currentCatId];
-      const categoryTeachers = catAssigned !== undefined
+      const assignments = getCategoryTeacherAssignments();
+      const catAssigned = assignments[currentCatId] || getDefaultCategoryTeachers({ id: currentCatId });
+      const categoryTeachers = catAssigned && catAssigned.length > 0
         ? allTeachers.filter((t) => new Set(catAssigned).has(t.id))
         : allTeachers;
 

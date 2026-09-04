@@ -1,9 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Production Supabase Instance (Project: vtokjwfefespmkvnnpxz)
-const DEFAULT_SUPABASE_URL = 'https://vtokjwfefespmkvnnpxz.supabase.co';
+// Production Supabase Instance (Project: pkiuwdcjommlsjiwwyzk)
+const DEFAULT_SUPABASE_URL = 'https://pkiuwdcjommlsjiwwyzk.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0b2tqd2ZlZmVzcG1rdm5ucHh6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgzNjM0NDUsImV4cCI6MjEwMzkzOTQ0NX0.DkQFF7Q2p4rmu4PC5XErxGXX1jeoHByG_AQpZSA4JOc';
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBraXV3ZGNqb21tbHNqaXd3eXprIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1MzY4NDUsImV4cCI6MjEwNDExMjg0NX0.0JvU7zwq1zSHAptEUuXSRQwuNb_4ajW2sQlnhC8NdFc';
 
 const envUrl = import.meta.env.VITE_SUPABASE_URL;
 const envAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;

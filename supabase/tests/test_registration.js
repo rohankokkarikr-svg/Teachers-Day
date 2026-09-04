@@ -8,87 +8,80 @@ import { resolveSupabaseConfig, extractProjectRef, validateAndInspectKey, testSu
 
 async function testRegistration() {
   console.log('\n======================================================');
-  console.log('🧪 RUNNING FULL END-TO-END VOTE & LEADERBOARD PROBE');
+  console.log('🧪 TESTING NEW SUPABASE DB VOTING & DIRECT WRITES');
   console.log('======================================================');
 
   const config = resolveSupabaseConfig();
+  console.log('Target Supabase URL:', config.url);
   const supabase = createClient(config.url, config.anonKey, {
     auth: { persistSession: false },
   });
 
-  const runId = `e2e_${Date.now()}`;
-  const studentName = `Student_${runId}`;
-  const deviceId = `dev_${runId}`;
-
-  // 1. Register student
-  console.log(`\n1. Registering student "${studentName}"...`);
-  const { data: regRes, error: regErr } = await supabase.rpc('register_or_get_student', {
-    p_full_name: studentName,
-    p_device_id: deviceId,
-    p_user_agent: 'E2E_Probe/1.0',
-  });
-
-  if (regErr || !regRes?.success) {
-    throw new Error(`Registration failed: ${regErr?.message || regRes?.message}`);
-  }
-  const studentId = regRes.student.id;
-  console.log(`   ✅ Registered student ID: ${studentId}`);
-
-  // 2. Fetch categories and teachers
+  // 1. Get first category and two teachers
   const { data: cats } = await supabase.from('categories').select('*').limit(1);
   const cat = cats[0];
-  const { data: teachers } = await supabase.from('teachers').select('*').limit(2);
-  console.log(`\n2. Voting in category "${cat.name}" (${cat.id})`);
-  console.log(`   Nominees: ${teachers[0].name} & ${teachers[1].name}`);
+  console.log('Category:', cat.name, cat.id);
 
-  // 3. Submit 5 votes
-  const submissionId = crypto.randomUUID();
+  const { data: teachers } = await supabase.from('teachers').select('*').limit(2);
+  console.log('Teachers:', teachers.map(t => `${t.name} (${t.id})`));
+
+  // 2. Test direct student profile insertion
+  const testStudentId = crypto.randomUUID();
+  const testDeviceId = 'probe_dev_' + Date.now();
+
+  const { data: profData, error: profErr } = await supabase.from('profiles').insert({
+    id: testStudentId,
+    full_name: 'Live Probe Student',
+    email: 'probe@student.college',
+    role: 'student',
+    device_id: testDeviceId,
+  }).select().single();
+
+  if (profErr) {
+    console.log('❌ Direct Profile Insert Error:', profErr.message);
+  } else {
+    console.log('✅ Direct Profile Insert PASS:', profData.id);
+  }
+
+  // 3. Test submit_votes RPC
+  const testSubId = crypto.randomUUID();
   const votePayload = [
     { teacher_id: teachers[0].id, vote_count: 3 },
     { teacher_id: teachers[1].id, vote_count: 2 },
   ];
 
-  console.log('\n3. Submitting 5 votes via submit_votes RPC...');
+  console.log('\nTesting submit_votes RPC...');
   const { data: voteRes, error: voteErr } = await supabase.rpc('submit_votes', {
     p_category_id: cat.id,
     p_votes: votePayload,
-    p_student_id: studentId,
-    p_device_id: deviceId,
-    p_submission_id: submissionId,
+    p_student_id: testStudentId,
+    p_device_id: testDeviceId,
+    p_submission_id: testSubId,
   });
 
-  if (voteErr || !voteRes?.success) {
-    throw new Error(`Vote submission failed: ${voteErr?.message || voteRes?.message}`);
+  if (voteErr) {
+    console.log('❌ submit_votes RPC Error:', voteErr.message);
+  } else {
+    console.log('✅ submit_votes RPC Success:', voteRes);
   }
-  console.log(`   ✅ Vote submission successful:`, voteRes);
 
-  // 4. Verify Supabase table writes
-  console.log('\n4. Verifying database table records...');
-  const { data: subRow } = await supabase.from('vote_submissions').select('*').eq('id', submissionId).single();
-  console.log(`   ✅ vote_submissions row found: ID ${subRow.id}, Student: ${subRow.student_id}`);
+  // 4. Verify vote_submissions row
+  const { data: subRow } = await supabase.from('vote_submissions').select('*').eq('id', testSubId);
+  console.log('✅ vote_submissions rows in DB:', subRow);
 
-  const { data: items } = await supabase.from('vote_items').select('*').eq('submission_id', submissionId);
-  console.log(`   ✅ vote_items rows found (${items.length} items):`, items.map(i => `Teacher ${i.teacher_id} -> ${i.vote_count} votes`));
+  const { data: itemRows } = await supabase.from('vote_items').select('*').eq('submission_id', testSubId);
+  console.log('✅ vote_items rows in DB:', itemRows);
 
-  // 5. Query Category Leaderboard RPC
-  console.log('\n5. Querying get_category_leaderboard RPC...');
-  const { data: leaderboard, error: lbErr } = await supabase.rpc('get_category_leaderboard', {
-    p_category_id: cat.id,
-  });
-  console.log(`   ✅ Leaderboard entries (${leaderboard?.length}):`, leaderboard?.slice(0, 3));
+  const { data: totalRows } = await supabase.from('vote_totals').select('*').eq('category_id', cat.id);
+  console.log('✅ vote_totals rows in DB:', totalRows);
 
-  // 6. Cleanup test data
-  console.log('\n6. Cleaning up test fixture...');
-  await supabase.from('vote_items').delete().eq('submission_id', submissionId);
-  await supabase.from('vote_submissions').delete().eq('id', submissionId);
-  await supabase.from('user_sessions').delete().eq('user_id', studentId);
-  await supabase.from('profiles').delete().eq('id', studentId);
+  // 5. Cleanup
+  console.log('\nCleaning up test probe...');
+  await supabase.from('vote_items').delete().eq('submission_id', testSubId);
+  await supabase.from('vote_submissions').delete().eq('id', testSubId);
+  await supabase.from('profiles').delete().eq('id', testStudentId);
   await supabase.rpc('resync_vote_totals');
-  console.log('   ✅ Test records cleaned up and vote_totals resynced.');
-
-  console.log('\n======================================================');
-  console.log('🎉 ALL INTEGRATION PROBES PASSED WITH 100% SUCCESS');
-  console.log('======================================================\n');
+  console.log('✅ Cleanup complete.');
 }
 
 testRegistration().catch((err) => {

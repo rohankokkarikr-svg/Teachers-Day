@@ -39,7 +39,6 @@ export const NAV_ITEMS = {
   student: [
     { label: 'Home', path: ROUTES.HOME, icon: 'Home' },
     { label: 'Vote', path: ROUTES.VOTE, icon: 'Vote' },
-    { label: 'Results', path: ROUTES.LIVE_RESULTS, icon: 'BarChart3' },
     { label: 'Wall', path: ROUTES.APPRECIATION, icon: 'Heart' },
     { label: 'Profile', path: ROUTES.PROFILE, icon: 'User' },
   ],

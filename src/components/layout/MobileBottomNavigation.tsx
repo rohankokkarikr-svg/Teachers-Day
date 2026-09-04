@@ -1,11 +1,10 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Vote, BarChart3, Heart, User } from 'lucide-react';
+import { Home, Vote, Heart, User } from 'lucide-react';
 import { ROUTES } from '../../lib/constants';
 
 const navItems = [
   { label: 'Home', path: ROUTES.HOME, Icon: Home },
   { label: 'Vote', path: ROUTES.VOTE, Icon: Vote },
-  { label: 'Results', path: ROUTES.LIVE_RESULTS, Icon: BarChart3 },
   { label: 'Wall', path: ROUTES.APPRECIATION, Icon: Heart },
   { label: 'Profile', path: ROUTES.PROFILE, Icon: User },
 ];

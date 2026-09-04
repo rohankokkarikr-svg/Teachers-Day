@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Outlet } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Outlet, Navigate } from 'react-router-dom';
 import { ROUTES } from './lib/constants';
 import Navbar from './components/layout/Navbar';
 import MobileBottomNavigation from './components/layout/MobileBottomNavigation';
@@ -18,7 +18,6 @@ import LoginPage from './pages/student/LoginPage';
 // Lazily loaded pages
 const VotePage = lazy(() => import('./pages/student/VotePage'));
 const CategoryVotePage = lazy(() => import('./pages/student/CategoryVotePage'));
-const LiveResultsPage = lazy(() => import('./pages/student/LiveResultsPage'));
 const AppreciationPage = lazy(() => import('./pages/student/AppreciationPage'));
 const ProfilePage = lazy(() => import('./pages/student/ProfilePage'));
 
@@ -30,6 +29,7 @@ const AdminCategories = lazy(() => import('./pages/admin/AdminCategories'));
 const AdminVotingControl = lazy(() => import('./pages/admin/AdminVotingControl'));
 const AdminParticipation = lazy(() => import('./pages/admin/AdminParticipation'));
 const AdminAppreciation = lazy(() => import('./pages/admin/AdminAppreciation'));
+const AdminLiveResults = lazy(() => import('./pages/admin/AdminLiveResults'));
 const AdminResults = lazy(() => import('./pages/admin/AdminResults'));
 const AdminEventMode = lazy(() => import('./pages/admin/AdminEventMode'));
 const AdminSettings = lazy(() => import('./pages/admin/AdminSettings'));
@@ -116,7 +116,7 @@ export default function App() {
           <Route element={<StudentLayout />}>
             <Route path={ROUTES.VOTE} element={<VotePage />} />
             <Route path={ROUTES.CATEGORY_VOTE} element={<CategoryVotePage />} />
-            <Route path={ROUTES.LIVE_RESULTS} element={<LiveResultsPage />} />
+            <Route path={ROUTES.LIVE_RESULTS} element={<Navigate to={ROUTES.VOTE} replace />} />
             <Route path={ROUTES.APPRECIATION} element={<AppreciationPage />} />
             <Route path={ROUTES.PROFILE} element={<ProfilePage />} />
           </Route>
@@ -128,7 +128,7 @@ export default function App() {
             <Route path="teachers" element={<AdminTeachers />} />
             <Route path="categories" element={<AdminCategories />} />
             <Route path="voting" element={<AdminVotingControl />} />
-            <Route path="results" element={<LiveResultsPage />} />
+            <Route path="results" element={<AdminLiveResults />} />
             <Route path="participation" element={<AdminParticipation />} />
             <Route path="appreciation" element={<AdminAppreciation />} />
             <Route path="final-results" element={<AdminResults />} />

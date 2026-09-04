@@ -164,9 +164,9 @@ export default function CategoryVotePage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => navigate(ROUTES.LIVE_RESULTS)}
+            onClick={() => navigate(ROUTES.VOTE)}
           >
-            View Results
+            Browse Categories
           </Button>
         </motion.div>
       )}
@@ -461,10 +461,10 @@ export default function CategoryVotePage() {
 
                   <Button
                     variant="outline"
-                    onClick={() => navigate(ROUTES.LIVE_RESULTS)}
+                    onClick={() => navigate(ROUTES.VOTE)}
                     className="flex-shrink-0 text-xs"
                   >
-                    View Live Results
+                    Browse Categories
                   </Button>
                 </>
               )}

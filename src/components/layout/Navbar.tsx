@@ -25,7 +25,6 @@ export default function Navbar(props: NavbarProps) {
 
   const navLinks = [
     { label: 'Vote', path: ROUTES.VOTE },
-    { label: 'Results', path: ROUTES.LIVE_RESULTS },
     { label: 'Wall', path: ROUTES.APPRECIATION },
   ];
 

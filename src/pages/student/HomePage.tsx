@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Award, ArrowRight, Star, Heart, Sparkles, Trophy, Lock } from 'lucide-react';
+import { Award, ArrowRight, Star, Heart, Sparkles, Lock } from 'lucide-react';
 import { APP_YEAR, ROUTES } from '../../lib/constants';
 import Button from '../../components/ui/Button';
 import ParticleBackground from '../../components/ui/ParticleBackground';
@@ -18,9 +18,9 @@ const features = [
     description: 'Distribute 5 votes across your favourite teachers in each award category.',
   },
   {
-    icon: <Trophy className="text-primary-400" size={22} />,
-    title: 'Live Results',
-    description: 'Watch the leaderboard update in real-time as votes pour in.',
+    icon: <Sparkles className="text-primary-400" size={22} />,
+    title: '8 Award Categories',
+    description: 'Celebrating teaching excellence, innovation, and mentorship across departments.',
   },
   {
     icon: <Heart className="text-rose-400" size={22} />,
@@ -120,7 +120,7 @@ export default function HomePage() {
           >
             {isVotingOpen
               ? 'Cast your votes, celebrate teaching excellence, and honor the educators who inspire us every day.'
-              : 'Voting has officially concluded. Explore the final live leaderboard and celebratory appreciation messages.'}
+              : 'Voting has concluded. Thank you for participating and honoring your favorite educators.'}
           </motion.p>
 
           {/* Hero Banner Showcase Frame */}
@@ -166,29 +166,19 @@ export default function HomePage() {
                     {isAuthenticated ? 'Continue Voting' : 'Start Voting Now'}
                   </Button>
                 </Link>
-                <Link to={ROUTES.LIVE_RESULTS}>
+                <Link to={ROUTES.APPRECIATION}>
                   <Button
                     variant="outline"
                     size="lg"
-                    icon={<Trophy size={16} className="text-gold-400" />}
+                    icon={<Heart size={16} className="text-rose-400" />}
                     className="w-full xs:w-auto"
                   >
-                    View Live Results
+                    Appreciation Wall
                   </Button>
                 </Link>
               </>
             ) : (
               <>
-                <Link to={ROUTES.LIVE_RESULTS}>
-                  <Button
-                    variant="gold"
-                    size="lg"
-                    icon={<Trophy size={18} />}
-                    className="w-full xs:w-auto shadow-glow-gold"
-                  >
-                    View Final Results
-                  </Button>
-                </Link>
                 <Link to={ROUTES.VOTE}>
                   <Button
                     variant="outline"
@@ -197,6 +187,16 @@ export default function HomePage() {
                     className="w-full xs:w-auto"
                   >
                     Browse Categories (Closed)
+                  </Button>
+                </Link>
+                <Link to={ROUTES.APPRECIATION}>
+                  <Button
+                    variant="gold"
+                    size="lg"
+                    icon={<Heart size={18} />}
+                    className="w-full xs:w-auto shadow-glow-gold"
+                  >
+                    View Appreciation Wall
                   </Button>
                 </Link>
               </>

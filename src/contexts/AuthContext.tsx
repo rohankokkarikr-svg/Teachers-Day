@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import type { User, Session } from '@supabase/supabase-js';
@@ -7,6 +7,12 @@ import {
   isDeviceBoundToDifferentStudent,
   bindDeviceToStudent,
 } from '../lib/deviceId';
+import {
+  recordUserLoginSession,
+  isSessionRevoked,
+  updateSessionHeartbeat,
+} from '../lib/sessionService';
+import { toast } from '../components/ui/Toast';
 import type { Profile, UserRole } from '../types';
 
 interface AuthContextType {
@@ -31,6 +37,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const userRef = useRef<User | null>(null);
+  const profileRef = useRef<Profile | null>(null);
+
+  userRef.current = user;
+  profileRef.current = profile;
 
   // Fetch profile from `profiles` table
   const fetchProfile = async (userId: string) => {
@@ -42,7 +53,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .single();
 
       if (error) {
-        console.error('Error fetching profile:', error.message);
         return null;
       }
       return data as Profile;
@@ -50,6 +60,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return null;
     }
   };
+
+  const handleEnforceForcedLogout = useCallback((reason = 'Your session was ended by the administrator.') => {
+    localStorage.removeItem('td_auth_user');
+    localStorage.removeItem('td_auth_profile');
+    if (isSupabaseConfigured) {
+      supabase.auth.signOut().catch(() => {});
+    }
+    setUser(null);
+    setSession(null);
+    setProfile(null);
+    toast.warning('Session Terminated', reason);
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -65,12 +87,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const userProfile = await fetchProfile(session.user.id);
             if (isMounted) setProfile(userProfile);
           } else {
-            // Check for saved demo user in localStorage
+            // Check for saved user in localStorage
             const savedUser = localStorage.getItem('td_auth_user');
             const savedProfile = localStorage.getItem('td_auth_profile');
             if (savedUser && savedProfile) {
-              setUser(JSON.parse(savedUser));
-              setProfile(JSON.parse(savedProfile));
+              const parsedUser = JSON.parse(savedUser);
+              const parsedProfile = JSON.parse(savedProfile);
+              const deviceId = getOrCreateDeviceId();
+
+              // Check if session was revoked while offline
+              if (parsedProfile.role !== 'admin' && isSessionRevoked(parsedUser.id, deviceId)) {
+                handleEnforceForcedLogout();
+                return;
+              }
+
+              setUser(parsedUser);
+              setProfile(parsedProfile);
             } else {
               setUser(null);
               setProfile(null);
@@ -109,7 +141,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           localStorage.removeItem('td_auth_user');
           localStorage.removeItem('td_auth_profile');
         } else {
-          // Session is null but student might be logged in locally via name
           try {
             const savedUser = localStorage.getItem('td_auth_user');
             const savedProfile = localStorage.getItem('td_auth_profile');
@@ -133,13 +164,134 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, []);
+  }, [handleEnforceForcedLogout]);
+
+  // Realtime Remote Logout Listener (Supabase Broadcast + PostgreSQL changes + Local custom events)
+  useEffect(() => {
+    const currentDeviceId = getOrCreateDeviceId();
+
+    const checkLocalRevocation = () => {
+      const currentUser = userRef.current;
+      const currentProfile = profileRef.current;
+      if (!currentUser || currentProfile?.role === 'admin') return;
+
+      if (isSessionRevoked(currentUser.id, currentDeviceId)) {
+        handleEnforceForcedLogout();
+      }
+    };
+
+    // 1. Heartbeat check every 3 seconds for active student sessions
+    const interval = setInterval(() => {
+      const currentUser = userRef.current;
+      if (currentUser) {
+        checkLocalRevocation();
+        updateSessionHeartbeat(currentUser.id, currentDeviceId);
+      }
+    }, 3000);
+
+    // 2. Custom local window event from Admin on same/local origin
+    const handleLocalRevokeEvent = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const currentUser = userRef.current;
+      const currentProfile = profileRef.current;
+      if (!currentUser || currentProfile?.role === 'admin') return;
+
+      if (detail?.all) {
+        handleEnforceForcedLogout('All student sessions were logged out by the administrator.');
+        return;
+      }
+
+      if (detail?.userId === currentUser.id || detail?.deviceId === currentDeviceId) {
+        handleEnforceForcedLogout();
+        return;
+      }
+
+      if (Array.isArray(detail?.userIds) && detail.userIds.includes(currentUser.id)) {
+        handleEnforceForcedLogout();
+        return;
+      }
+
+      if (Array.isArray(detail?.deviceIds) && detail.deviceIds.includes(currentDeviceId)) {
+        handleEnforceForcedLogout();
+        return;
+      }
+    };
+
+    window.addEventListener('td_user_session_revoked', handleLocalRevokeEvent);
+    window.addEventListener('storage', checkLocalRevocation);
+    window.addEventListener('focus', checkLocalRevocation);
+
+    // 3. Supabase Realtime Broadcast & DB Table Subscription
+    let realtimeChannel: any = null;
+    if (isSupabaseConfigured) {
+      realtimeChannel = supabase
+        .channel('system_auth_channel')
+        .on('broadcast', { event: 'force_logout' }, (payload: any) => {
+          const data = payload?.payload;
+          const currentUser = userRef.current;
+          const currentProfile = profileRef.current;
+          if (!currentUser || currentProfile?.role === 'admin') return;
+
+          if (data?.userId === currentUser.id || data?.deviceId === currentDeviceId) {
+            handleEnforceForcedLogout();
+          }
+        })
+        .on('broadcast', { event: 'force_logout_batch' }, (payload: any) => {
+          const data = payload?.payload;
+          const currentUser = userRef.current;
+          const currentProfile = profileRef.current;
+          if (!currentUser || currentProfile?.role === 'admin') return;
+
+          if (
+            (Array.isArray(data?.userIds) && data.userIds.includes(currentUser.id)) ||
+            (Array.isArray(data?.deviceIds) && data.deviceIds.includes(currentDeviceId))
+          ) {
+            handleEnforceForcedLogout();
+          }
+        })
+        .on('broadcast', { event: 'force_logout_all' }, () => {
+          const currentProfile = profileRef.current;
+          if (currentProfile?.role !== 'admin') {
+            handleEnforceForcedLogout('All student sessions were logged out by the administrator.');
+          }
+        })
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'user_sessions' },
+          (payload: any) => {
+            const updated = payload.new;
+            const currentUser = userRef.current;
+            const currentProfile = profileRef.current;
+            if (!currentUser || currentProfile?.role === 'admin') return;
+
+            if (
+              (updated?.user_id === currentUser.id || updated?.device_id === currentDeviceId) &&
+              updated?.is_active === false
+            ) {
+              handleEnforceForcedLogout();
+            }
+          }
+        )
+        .subscribe();
+    }
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('td_user_session_revoked', handleLocalRevokeEvent);
+      window.removeEventListener('storage', checkLocalRevocation);
+      window.removeEventListener('focus', checkLocalRevocation);
+      if (realtimeChannel) {
+        supabase.removeChannel(realtimeChannel);
+      }
+    };
+  }, [handleEnforceForcedLogout]);
 
   const setLocalDemoUser = (demoUser: User, demoProfile: Profile) => {
     setUser(demoUser);
     setProfile(demoProfile);
     localStorage.setItem('td_auth_user', JSON.stringify(demoUser));
     localStorage.setItem('td_auth_profile', JSON.stringify(demoProfile));
+    recordUserLoginSession(demoProfile).catch(() => {});
   };
 
   const ADMIN_PASSCODE = '767614';

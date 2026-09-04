@@ -24,6 +24,7 @@ const ProfilePage = lazy(() => import('./pages/student/ProfilePage'));
 
 // Admin Pages
 const AdminDashboard = lazy(() => import('./pages/admin/AdminDashboard'));
+const AdminUsers = lazy(() => import('./pages/admin/AdminUsers'));
 const AdminTeachers = lazy(() => import('./pages/admin/AdminTeachers'));
 const AdminCategories = lazy(() => import('./pages/admin/AdminCategories'));
 const AdminVotingControl = lazy(() => import('./pages/admin/AdminVotingControl'));
@@ -123,6 +124,7 @@ export default function App() {
           {/* Admin Routes */}
           <Route path="/admin" element={<AdminLayout />}>
             <Route index element={<AdminDashboard />} />
+            <Route path="users" element={<AdminUsers />} />
             <Route path="teachers" element={<AdminTeachers />} />
             <Route path="categories" element={<AdminCategories />} />
             <Route path="voting" element={<AdminVotingControl />} />

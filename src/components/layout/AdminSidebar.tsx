@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard,
+  UserCheck,
   GraduationCap,
   FolderOpen,
   Vote,
@@ -24,6 +25,7 @@ import { useAuth } from '../../hooks/useAuth';
 
 const adminNavItems = [
   { label: 'Dashboard', path: ROUTES.ADMIN_DASHBOARD, Icon: LayoutDashboard, exact: true },
+  { label: 'Users & Sessions', path: ROUTES.ADMIN_USERS, Icon: UserCheck },
   { label: 'Teachers', path: ROUTES.ADMIN_TEACHERS, Icon: GraduationCap },
   { label: 'Categories', path: ROUTES.ADMIN_CATEGORIES, Icon: FolderOpen },
   { label: 'Voting Control', path: ROUTES.ADMIN_VOTING, Icon: Vote },

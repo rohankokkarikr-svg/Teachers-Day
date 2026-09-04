@@ -162,3 +162,21 @@ export interface SubmitVotesResponse {
   message: string;
   submission_id?: string;
 }
+
+// ===== User Session & Login History Types =====
+export interface UserSessionRecord {
+  id: string;
+  user_id: string;
+  full_name: string;
+  email: string;
+  role: UserRole;
+  device_id: string;
+  user_agent?: string;
+  ip_address?: string;
+  is_active: boolean;
+  login_at: string;
+  last_active_at: string;
+  revoked_at?: string;
+  voted_categories_count?: number;
+  total_categories_count?: number;
+}

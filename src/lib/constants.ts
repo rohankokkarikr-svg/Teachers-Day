@@ -20,6 +20,7 @@ export const ROUTES = {
   // Admin
   ADMIN: '/admin',
   ADMIN_DASHBOARD: '/admin',
+  ADMIN_USERS: '/admin/users',
   ADMIN_TEACHERS: '/admin/teachers',
   ADMIN_CATEGORIES: '/admin/categories',
   ADMIN_VOTING: '/admin/voting',
@@ -44,6 +45,7 @@ export const NAV_ITEMS = {
   ],
   admin: [
     { label: 'Dashboard', path: ROUTES.ADMIN_DASHBOARD, icon: 'LayoutDashboard' },
+    { label: 'Users & Sessions', path: ROUTES.ADMIN_USERS, icon: 'UserCheck' },
     { label: 'Teachers', path: ROUTES.ADMIN_TEACHERS, icon: 'GraduationCap' },
     { label: 'Categories', path: ROUTES.ADMIN_CATEGORIES, icon: 'FolderOpen' },
     { label: 'Voting', path: ROUTES.ADMIN_VOTING, icon: 'Vote' },

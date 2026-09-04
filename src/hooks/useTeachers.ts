@@ -20,12 +20,14 @@ export function getAllTeachers(): Teacher[] {
     }
   });
 
-  return stored.map((t) => ({
-    ...t,
-    photo_url: t.photo_url?.trim()
-      ? t.photo_url
-      : photoMap.get(t.id) || photoMap.get(t.name?.trim().toLowerCase()) || '',
-  }));
+  return stored.map((t) => {
+    const localPhoto = photoMap.get(t.id) || photoMap.get(t.name?.trim().toLowerCase());
+    const isCustomValidPhoto = t.photo_url?.startsWith('/teachers/') || t.photo_url?.startsWith('data:') || t.photo_url?.startsWith('blob:');
+    return {
+      ...t,
+      photo_url: isCustomValidPhoto ? t.photo_url : (localPhoto || t.photo_url || ''),
+    };
+  });
 }
 
 export function useTeachers(categoryId?: string) {
@@ -112,12 +114,14 @@ export function useTeachers(categoryId?: string) {
           }
         });
 
-        const mergedList: Teacher[] = teachersRes.data.map((t: Teacher) => ({
-          ...t,
-          photo_url: t.photo_url?.trim()
-            ? t.photo_url
-            : photoMap.get(t.id) || photoMap.get(t.name?.trim().toLowerCase()) || '',
-        }));
+        const mergedList: Teacher[] = teachersRes.data.map((t: Teacher) => {
+          const localPhoto = photoMap.get(t.id) || photoMap.get(t.name?.trim().toLowerCase());
+          const isCustomValidPhoto = t.photo_url?.startsWith('/teachers/') || t.photo_url?.startsWith('data:') || t.photo_url?.startsWith('blob:');
+          return {
+            ...t,
+            photo_url: isCustomValidPhoto ? t.photo_url : (localPhoto || t.photo_url || ''),
+          };
+        });
 
         setLocalStorage('td_admin_teachers', mergedList);
         const liveAll = mergedList.filter((t: Teacher) => t.is_active !== false);

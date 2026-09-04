@@ -8,10 +8,24 @@ import type { Teacher } from '../types';
 export const INITIAL_FALLBACK_TEACHERS: Teacher[] = INITIAL_TEACHERS_DATA;
 
 /**
- * Gets all active teachers from storage or fallback
+ * Gets all active teachers from storage or fallback, ensuring photos are hydrated
  */
 export function getAllTeachers(): Teacher[] {
-  return getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_FALLBACK_TEACHERS);
+  const stored = getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_FALLBACK_TEACHERS);
+  const photoMap = new Map<string, string>();
+  INITIAL_FALLBACK_TEACHERS.forEach((initT) => {
+    if (initT.photo_url) {
+      photoMap.set(initT.id, initT.photo_url);
+      photoMap.set(initT.name.trim().toLowerCase(), initT.photo_url);
+    }
+  });
+
+  return stored.map((t) => ({
+    ...t,
+    photo_url: t.photo_url?.trim()
+      ? t.photo_url
+      : photoMap.get(t.id) || photoMap.get(t.name?.trim().toLowerCase()) || '',
+  }));
 }
 
 export function useTeachers(categoryId?: string) {
@@ -69,11 +83,25 @@ export function useTeachers(categoryId?: string) {
         timeoutPromise,
       ])) as any;
 
-      if (teachersRes.error) throw teachersRes.error;
+      if (teachersRes.data && teachersRes.data.length > 0) {
+        // Fallback photo lookup map
+        const photoMap = new Map<string, string>();
+        INITIAL_TEACHERS_DATA.forEach((initT) => {
+          if (initT.photo_url) {
+            photoMap.set(initT.id, initT.photo_url);
+            photoMap.set(initT.name.trim().toLowerCase(), initT.photo_url);
+          }
+        });
 
-      if (teachersRes.data) {
-        setLocalStorage('td_admin_teachers', teachersRes.data);
-        const liveAll = teachersRes.data.filter((t: Teacher) => t.is_active !== false);
+        const mergedList: Teacher[] = teachersRes.data.map((t: Teacher) => ({
+          ...t,
+          photo_url: t.photo_url?.trim()
+            ? t.photo_url
+            : photoMap.get(t.id) || photoMap.get(t.name?.trim().toLowerCase()) || '',
+        }));
+
+        setLocalStorage('td_admin_teachers', mergedList);
+        const liveAll = mergedList.filter((t: Teacher) => t.is_active !== false);
 
         if (!categoryId) {
           setTeachers(liveAll);

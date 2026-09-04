@@ -10,21 +10,13 @@ import ProgressIndicator from '../../components/ui/ProgressIndicator';
 import ConfirmationModal from '../../components/ui/ConfirmationModal';
 import LoadingSkeleton from '../../components/ui/LoadingSkeleton';
 import Badge from '../../components/ui/Badge';
-import { getInitials, getLocalStorage } from '../../lib/utils';
+import TeacherAvatar from '../../components/ui/TeacherAvatar';
+import { getLocalStorage } from '../../lib/utils';
 import { useAuth } from '../../hooks/useAuth';
 import { useCategories } from '../../hooks/useCategories';
 import { useTeachers } from '../../hooks/useTeachers';
 import { useVoting } from '../../hooks/useVoting';
 import { toast } from '../../components/ui/Toast';
-
-const avatarColors = [
-  'from-primary-500 to-primary-700',
-  'from-rose-500 to-rose-700',
-  'from-gold-500 to-gold-700',
-  'from-emerald-500 to-emerald-700',
-  'from-violet-500 to-violet-700',
-  'from-cyan-500 to-cyan-700',
-];
 
 export default function CategoryVotePage() {
   const { categoryId = '' } = useParams();
@@ -324,21 +316,13 @@ export default function CategoryVotePage() {
                   >
                     <div className="flex items-center gap-3 p-4">
                       {/* Avatar / Photo */}
-                      {teacher.photo_url ? (
-                        <img
-                          src={teacher.photo_url}
-                          alt={teacher.name}
-                          className="w-12 h-12 rounded-xl object-cover border border-white/10 flex-shrink-0 shadow-lg"
-                        />
-                      ) : (
-                        <div
-                          className={`w-12 h-12 rounded-xl bg-gradient-to-br ${
-                            avatarColors[index % avatarColors.length]
-                          } flex items-center justify-center flex-shrink-0 text-white font-bold text-sm shadow-lg`}
-                        >
-                          {getInitials(teacher.name)}
-                        </div>
-                      )}
+                      <TeacherAvatar
+                        name={teacher.name}
+                        photoUrl={teacher.photo_url}
+                        size="md"
+                        rounded="xl"
+                        className="!w-12 !h-12 shadow-lg"
+                      />
 
                       {/* Info */}
                       <div className="flex-1 min-w-0">

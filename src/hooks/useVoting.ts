@@ -310,8 +310,8 @@ export function useVoting(categoryId: string, userId?: string) {
       // Broadcast instant realtime signal to all connected mobile & desktop devices
       if (isSupabaseConfigured) {
         try {
-          const liveChannel = supabase.channel('td_global_realtime');
-          liveChannel.send({
+          const categoryChannel = supabase.channel(`live_results_stream_${categoryId}`);
+          categoryChannel.send({
             type: 'broadcast',
             event: 'vote_submitted',
             payload: {
@@ -335,8 +335,8 @@ export function useVoting(categoryId: string, userId?: string) {
 
       if (isSupabaseConfigured) {
         try {
-          const liveChannel = supabase.channel('td_global_realtime');
-          liveChannel.send({
+          const categoryChannel = supabase.channel(`live_results_stream_${categoryId}`);
+          categoryChannel.send({
             type: 'broadcast',
             event: 'vote_submitted',
             payload: {

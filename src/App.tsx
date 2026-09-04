@@ -6,6 +6,7 @@ import MobileBottomNavigation from './components/layout/MobileBottomNavigation';
 import AdminSidebar from './components/layout/AdminSidebar';
 import AdminHeader from './components/layout/AdminHeader';
 import ToastContainer from './components/ui/Toast';
+import ErrorBoundary from './components/ui/ErrorBoundary';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/layout/ProtectedRoute';
 import { SpeedInsights } from '@vercel/speed-insights/react';
@@ -97,8 +98,9 @@ function PublicLayout() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
+    <ErrorBoundary>
+      <AuthProvider>
+        <BrowserRouter>
         <ToastContainer />
 
         <Routes>
@@ -163,7 +165,8 @@ export default function App() {
         />
       </Routes>
     </BrowserRouter>
-    <SpeedInsights />
-    </AuthProvider>
+      <SpeedInsights />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }

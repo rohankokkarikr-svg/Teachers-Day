@@ -94,16 +94,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Subscribe to auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      async (event, session) => {
         if (!isMounted) return;
         setSession(session);
-        setUser(session?.user ?? null);
 
         if (session?.user) {
+          setUser(session.user);
           const userProfile = await fetchProfile(session.user.id);
           if (isMounted) setProfile(userProfile);
-        } else {
+        } else if (event === 'SIGNED_OUT') {
+          // Explicit sign out
+          setUser(null);
           setProfile(null);
+          localStorage.removeItem('td_auth_user');
+          localStorage.removeItem('td_auth_profile');
+        } else {
+          // Session is null but student might be logged in locally via name
+          try {
+            const savedUser = localStorage.getItem('td_auth_user');
+            const savedProfile = localStorage.getItem('td_auth_profile');
+            if (savedUser && savedProfile) {
+              setUser(JSON.parse(savedUser));
+              setProfile(JSON.parse(savedProfile));
+            } else {
+              setUser(null);
+              setProfile(null);
+            }
+          } catch {
+            setUser(null);
+            setProfile(null);
+          }
         }
         setIsLoading(false);
       }

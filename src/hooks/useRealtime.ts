@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
-import { getLocalStorage } from '../lib/utils';
+import { getLocalStorage, setLocalStorage } from '../lib/utils';
 import { getAllTeachers } from './useTeachers';
 import { INITIAL_CATEGORY_ASSIGNMENTS } from '../data/initialCategories';
 import type { LeaderboardEntry, VotingSettings } from '../types';
@@ -121,17 +121,40 @@ export function useRealtime(categoryId?: string) {
         setShowLiveCounts(settingsRes.data.show_live_counts);
       }
 
-      const allTeachers: any[] = teachersRes?.data || [];
+      // Teachers list with robust fallback to local/cached teachers with photos
+      const dbTeachers: any[] = teachersRes?.data || [];
+      const allTeachers: any[] = dbTeachers.length > 0 ? dbTeachers : getAllTeachers().filter((t) => t.is_active !== false);
+
+      // Category assignments
+      const localAssignments = getLocalStorage<Record<string, string[]>>(
+        'td_category_teacher_assignments',
+        INITIAL_CATEGORY_ASSIGNMENTS
+      );
       let categoryTeachers: any[] = allTeachers;
-      if (ctRes?.data !== null && ctRes?.data !== undefined && !ctRes.error) {
+      if (ctRes?.data && ctRes.data.length > 0) {
         const assignedIds = new Set<string>(ctRes.data.map((ct: any) => ct.teacher_id));
+        categoryTeachers = allTeachers.filter((t) => assignedIds.has(t.id));
+      } else if (localAssignments[currentCatId]) {
+        const assignedIds = new Set<string>(localAssignments[currentCatId]);
         categoryTeachers = allTeachers.filter((t) => assignedIds.has(t.id));
       }
 
       const votesMap: Record<string, number> = {};
-      (totalsRes?.data || []).forEach((row: any) => {
-        votesMap[row.teacher_id] = row.total_votes;
-      });
+      const localTotals = getLocalStorage<Record<string, Record<string, number>>>('td_category_vote_totals', {});
+      const catLocalVotes = localTotals[currentCatId] || {};
+
+      if (totalsRes?.data && totalsRes.data.length > 0) {
+        totalsRes.data.forEach((row: any) => {
+          votesMap[row.teacher_id] = row.total_votes;
+        });
+
+        // Sync Supabase totals to local cache for offline/instant hydration
+        const updatedTotals = { ...localTotals, [currentCatId]: votesMap };
+        setLocalStorage('td_category_vote_totals', updatedTotals);
+      } else {
+        // Use local tallies if Supabase had 0 rows for this category
+        Object.assign(votesMap, catLocalVotes);
+      }
 
       const entries: LeaderboardEntry[] = categoryTeachers.map((t) => ({
         teacher_id: t.id,

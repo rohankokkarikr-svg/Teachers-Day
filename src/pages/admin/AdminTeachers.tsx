@@ -25,8 +25,10 @@ import Badge from '../../components/ui/Badge';
 import Modal from '../../components/ui/Modal';
 import ConfirmationModal from '../../components/ui/ConfirmationModal';
 import LoadingSkeleton from '../../components/ui/LoadingSkeleton';
-import { getInitials, getLocalStorage, setLocalStorage, exportToCSV } from '../../lib/utils';
+import TeacherAvatar from '../../components/ui/TeacherAvatar';
+import { getLocalStorage, setLocalStorage, exportToCSV } from '../../lib/utils';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
+import { uploadTeacherPhoto } from '../../lib/imageUtils';
 import { useAdmin } from '../../hooks/useAdmin';
 import { toast } from '../../components/ui/Toast';
 import { INITIAL_TEACHERS_DATA } from '../../data/initialTeachers';
@@ -53,6 +55,7 @@ export default function AdminTeachers() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isBulkSaving, setIsBulkSaving] = useState(false);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bulkCsvInputRef = useRef<HTMLInputElement>(null);
 
@@ -179,7 +182,7 @@ export default function AdminTeachers() {
     setIsModalOpen(true);
   };
 
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -188,15 +191,22 @@ export default function AdminTeachers() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const result = event.target?.result as string;
-      if (result) {
-        setPhotoUrl(result);
-        toast.success('Image Loaded', 'Profile photo attached.');
+    setIsUploadingPhoto(true);
+    toast.info('Optimizing Photo', 'Compressing and uploading profile image...');
+
+    try {
+      const result = await uploadTeacherPhoto(file, editingTeacher?.id);
+      if (result.success && result.url) {
+        setPhotoUrl(result.url);
+        toast.success('Photo Attached', 'Optimized profile photo is ready.');
+      } else {
+        toast.error('Upload Notice', result.error || 'Using local image preview.');
       }
-    };
-    reader.readAsDataURL(file);
+    } catch {
+      toast.error('Upload Failed', 'Could not process selected image.');
+    } finally {
+      setIsUploadingPhoto(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -570,17 +580,13 @@ export default function AdminTeachers() {
               <Card key={teacher.id} variant="default" className="relative group flex flex-col justify-between">
                 <div className="flex items-start gap-3">
                   {/* Photo or Initials Avatar */}
-                  {teacher.photo_url ? (
-                    <img
-                      src={teacher.photo_url}
-                      alt={teacher.name}
-                      className="w-12 h-12 rounded-xl object-cover border border-surface-600 flex-shrink-0 shadow-md"
-                    />
-                  ) : (
-                    <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center flex-shrink-0 text-white font-bold text-sm shadow-md">
-                      {getInitials(teacher.name)}
-                    </div>
-                  )}
+                  <TeacherAvatar
+                    name={teacher.name}
+                    photoUrl={teacher.photo_url}
+                    size="md"
+                    rounded="xl"
+                    className="!w-12 !h-12 shadow-md"
+                  />
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2 mb-1">
@@ -727,9 +733,10 @@ export default function AdminTeachers() {
                     variant="outline"
                     size="sm"
                     icon={<Upload size={14} />}
+                    isLoading={isUploadingPhoto}
                     onClick={() => fileInputRef.current?.click()}
                   >
-                    Upload Image
+                    {isUploadingPhoto ? 'Processing...' : 'Upload Image'}
                   </Button>
                 </div>
                 <Input

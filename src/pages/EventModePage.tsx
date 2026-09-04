@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Trophy, ChevronLeft, ChevronRight, X, Sparkles, Award, Star } from 'lucide-react';
 import { APP_NAME, APP_YEAR, ROUTES } from '../lib/constants';
-import { getInitials } from '../lib/utils';
+import TeacherAvatar from '../components/ui/TeacherAvatar';
 import { useCategories } from '../hooks/useCategories';
 import { useRealtime } from '../hooks/useRealtime';
 
@@ -213,17 +213,13 @@ export default function EventModePage() {
                     transition={{ delay: 0.3, type: 'spring', stiffness: 300 }}
                     className="relative w-36 h-36 sm:w-44 sm:h-44 mx-auto mb-6 rounded-3xl p-1.5 bg-gradient-to-b from-gold-300 via-amber-500 to-gold-600 shadow-glow-gold"
                   >
-                    {winner.teacher_photo ? (
-                      <img
-                        src={winner.teacher_photo}
-                        alt={winner.teacher_name}
-                        className="w-full h-full rounded-2xl object-cover shadow-inner"
-                      />
-                    ) : (
-                      <div className="w-full h-full rounded-2xl bg-gradient-to-br from-gold-500 to-amber-600 flex items-center justify-center font-bold text-4xl sm:text-5xl text-surface-950">
-                        {getInitials(winner.teacher_name)}
-                      </div>
-                    )}
+                    <TeacherAvatar
+                      name={winner.teacher_name}
+                      photoUrl={winner.teacher_photo}
+                      size="2xl"
+                      rounded="2xl"
+                      className="!w-full !h-full shadow-inner"
+                    />
                   </motion.div>
 
                   {/* Winner Name & Department */}

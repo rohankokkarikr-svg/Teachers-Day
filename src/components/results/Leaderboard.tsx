@@ -1,22 +1,13 @@
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
 import { MEDAL_EMOJIS } from '../../lib/constants';
-import { getInitials } from '../../lib/utils';
 import type { LeaderboardEntry } from '../../types';
 import Card from '../ui/Card';
+import TeacherAvatar from '../ui/TeacherAvatar';
 
 interface LeaderboardProps {
   entries: LeaderboardEntry[];
   showLiveCounts?: boolean;
 }
-
-const avatarColors = [
-  'from-gold-500 to-gold-600',
-  'from-surface-300 to-surface-400',
-  'from-amber-600 to-amber-700',
-  'from-primary-500 to-primary-700',
-  'from-rose-500 to-rose-700',
-  'from-emerald-500 to-emerald-700',
-];
 
 export default function Leaderboard({ entries, showLiveCounts = true }: LeaderboardProps) {
   const maxVotes = entries[0]?.total_votes || 1;
@@ -76,21 +67,13 @@ export default function Leaderboard({ entries, showLiveCounts = true }: Leaderbo
                     </div>
 
                     {/* Avatar / Photo */}
-                    {entry.teacher_photo ? (
-                      <img
-                        src={entry.teacher_photo}
-                        alt={entry.teacher_name}
-                        className="w-10 h-10 rounded-xl object-cover border border-white/10 flex-shrink-0 shadow-sm"
-                      />
-                    ) : (
-                      <div
-                        className={`w-10 h-10 rounded-xl bg-gradient-to-br ${
-                          avatarColors[index % avatarColors.length]
-                        } flex items-center justify-center flex-shrink-0 text-white font-bold text-xs shadow-sm`}
-                      >
-                        {getInitials(entry.teacher_name)}
-                      </div>
-                    )}
+                    <TeacherAvatar
+                      name={entry.teacher_name}
+                      photoUrl={entry.teacher_photo}
+                      size="md"
+                      rounded="xl"
+                      className="shadow-sm"
+                    />
 
                     {/* Info */}
                     <div className="flex-1 min-w-0">

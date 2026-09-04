@@ -165,7 +165,7 @@ export function useAdmin() {
 
       const subPromise = supabase
         .from('vote_submissions')
-        .select('student_id', { count: 'exact', head: true });
+        .select('student_id');
 
       const catPromise = supabase
         .from('categories')
@@ -206,12 +206,18 @@ export function useAdmin() {
         setLocalStorage('td_admin_settings', settingsRes.data);
       }
 
-      const totalStudents = studentRes?.count !== undefined && studentRes?.count !== null
-        ? studentRes.count
-        : totalRegistered;
-      const totalParticipants = subRes?.count !== undefined && subRes?.count !== null
-        ? subRes.count
-        : uniqueVoters;
+      const distinctVotersSet = new Set<string>();
+      if (subRes?.data && Array.isArray(subRes.data)) {
+        subRes.data.forEach((s: any) => {
+          if (s.student_id) distinctVotersSet.add(s.student_id);
+        });
+      }
+
+      const totalParticipants = subRes?.data ? distinctVotersSet.size : uniqueVoters;
+      const totalStudents = Math.max(
+        studentRes?.count !== undefined && studentRes?.count !== null ? studentRes.count : totalRegistered,
+        totalParticipants
+      );
       const cloudRate = totalStudents > 0 ? Math.min(100, Math.round((totalParticipants / totalStudents) * 100)) : 0;
       const totalCategories = catRes?.count || allCats.length || 7;
       const totalVotes = totalsRes?.data
@@ -520,6 +526,31 @@ export function useAdmin() {
   // Export Results to CSV
   const exportResultsCSV = async (): Promise<{ success: boolean; error?: string }> => {
     try {
+      if (isSupabaseConfigured) {
+        try {
+          const { data: cloudTotals } = await supabase
+            .from('vote_totals')
+            .select('*, category:categories(name), teacher:teachers(name, department)')
+            .order('category_id');
+
+          if (cloudTotals && Array.isArray(cloudTotals) && cloudTotals.length > 0) {
+            const csvRows = cloudTotals.map((item: any) => ({
+              'Award Category': item.category?.name || item.category_id,
+              'Teacher / Staff': item.teacher?.name || item.teacher_id,
+              Department: item.teacher?.department || 'BCA',
+              'Total Votes': item.total_votes || 0,
+              'Last Updated': item.updated_at || '',
+            }));
+
+            exportToCSV(csvRows, `teachers_day_results_${new Date().toISOString().slice(0, 10)}`);
+            await logAction('Exported Results CSV (Live DB)');
+            return { success: true };
+          }
+        } catch {
+          // Fallback to local
+        }
+      }
+
       const localTotals = getLocalStorage<Record<string, Record<string, number>>>('td_category_vote_totals', {});
       const rows: any[] = [];
       Object.entries(localTotals).forEach(([catId, tMap]) => {

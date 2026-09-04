@@ -230,6 +230,12 @@ export default function AdminTeachers() {
       setTeachers(defaultList);
 
       if (isSupabaseConfigured) {
+        try {
+          await supabase.rpc('sync_system_defaults');
+        } catch {
+          // Fallback
+        }
+
         for (const t of defaultList) {
           await supabase.from('teachers').upsert({
             id: t.id,
@@ -245,7 +251,8 @@ export default function AdminTeachers() {
 
       await logAction('Synced Default Teachers & Staff', { count: defaultList.length });
       window.dispatchEvent(new Event('td_admin_teachers_updated'));
-      toast.success('Sync Complete', 'All 15 Teaching Faculty and 4 Non-Technical Staff photos and details restored.');
+      window.dispatchEvent(new Event('td_admin_categories_updated'));
+      toast.success('Sync Complete', 'All 15 Teaching Faculty and 4 Non-Technical Staff photos and category mappings restored.');
     } catch {
       toast.error('Sync Notice', 'Local records updated.');
     } finally {

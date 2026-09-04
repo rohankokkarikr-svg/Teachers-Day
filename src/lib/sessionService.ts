@@ -531,7 +531,7 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
     }
   });
 
-  // 2. If Supabase is configured, fetch remote ground truth from BOTH profiles and user_sessions
+  // 2. If Supabase is configured, fetch remote ground truth from profiles, user_sessions, and vote_submissions
   if (isSupabaseConfigured) {
     try {
       const sessionsPromise = supabase
@@ -544,20 +544,52 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
         .select('*')
         .order('created_at', { ascending: false });
 
+      const submissionsPromise = supabase
+        .from('vote_submissions')
+        .select('student_id, category_id');
+
+      const categoriesPromise = supabase
+        .from('categories')
+        .select('id')
+        .eq('is_active', true);
+
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Sessions fetch timeout')), 3000)
+        setTimeout(() => reject(new Error('Sessions fetch timeout')), 3500)
       );
 
-      const [sessionsRes, profilesRes] = (await Promise.race([
-        Promise.all([sessionsPromise, profilesPromise]),
+      const [sessionsRes, profilesRes, submissionsRes, categoriesRes] = (await Promise.race([
+        Promise.all([sessionsPromise, profilesPromise, submissionsPromise, categoriesPromise]),
         timeoutPromise,
       ])) as any;
+
+      const totalActiveCategories = categoriesRes?.data?.length || 8;
+
+      // Group submitted categories by student_id from Supabase
+      const remoteStudentVotesMap = new Map<string, Set<string>>();
+      if (submissionsRes?.data && Array.isArray(submissionsRes.data)) {
+        submissionsRes.data.forEach((sub: any) => {
+          if (sub.student_id && sub.category_id) {
+            if (!remoteStudentVotesMap.has(sub.student_id)) {
+              remoteStudentVotesMap.set(sub.student_id, new Set());
+            }
+            remoteStudentVotesMap.get(sub.student_id)!.add(sub.category_id);
+          }
+        });
+      }
+
+      // Helper to compute combined voted categories count
+      const getVotedCountForUser = (uId: string): number => {
+        const remoteVotes = remoteStudentVotesMap.get(uId) || new Set<string>();
+        const localVotes = getUserSubmittedCategories(uId);
+        const combined = new Set([...remoteVotes, ...localVotes]);
+        return combined.size;
+      };
 
       // 2a. Ingest all registered profiles from Supabase
       if (profilesRes?.data && Array.isArray(profilesRes.data)) {
         profilesRes.data.forEach((p: any) => {
           if (!sessionMap.has(p.id)) {
-            const votes = getUserSubmittedCategories(p.id);
+            const votesCount = getVotedCountForUser(p.id);
             const isRevoked = isIdentifierRevoked(p.id, p.email, p.full_name, p.device_id);
             sessionMap.set(p.id, {
               id: `sess_${p.id}`,
@@ -570,8 +602,8 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
               is_active: !isRevoked,
               login_at: p.created_at || new Date().toISOString(),
               last_active_at: p.updated_at || p.created_at || new Date().toISOString(),
-              voted_categories_count: votes.length,
-              total_categories_count: 8,
+              voted_categories_count: votesCount,
+              total_categories_count: totalActiveCategories,
             });
           }
         });
@@ -580,7 +612,7 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
       // 2b. Ingest detailed user sessions
       if (sessionsRes?.data && Array.isArray(sessionsRes.data)) {
         sessionsRes.data.forEach((remoteS: any) => {
-          const votes = getUserSubmittedCategories(remoteS.user_id);
+          const votesCount = getVotedCountForUser(remoteS.user_id);
           const isRemotelyRevoked = remoteS.is_active === false || remoteS.revoked_at != null;
           const isLocallyRevoked = isIdentifierRevoked(remoteS.user_id, remoteS.email, remoteS.full_name, remoteS.device_id);
           const isRevoked = isRemotelyRevoked || isLocallyRevoked;
@@ -606,8 +638,8 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
             login_at: remoteS.login_at || remoteS.created_at || new Date().toISOString(),
             last_active_at: remoteS.last_active_at || new Date().toISOString(),
             revoked_at: isRevoked ? (remoteS.revoked_at || new Date().toISOString()) : undefined,
-            voted_categories_count: votes.length,
-            total_categories_count: 8,
+            voted_categories_count: votesCount,
+            total_categories_count: totalActiveCategories,
           });
         });
       }
@@ -1186,19 +1218,62 @@ export async function deleteUserAccount(
   // 6. Delete from Supabase Database
   if (isSupabaseConfigured) {
     try {
-      // 6a. Delete from user_sessions
-      if (userId) {
-        await supabase.from('user_sessions').delete().eq('user_id', userId);
-      }
-      if (cleanEmail) {
-        await supabase.from('user_sessions').delete().ilike('email', cleanEmail);
-      }
-
-      // 6b. Delete from vote_submissions (cascades to vote_items)
+      // 6a. Try atomic RPC if available, or direct table deletion
       if (userId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+        try {
+          await supabase.rpc('delete_student_account', { p_student_id: userId });
+        } catch {
+          // Fallback direct table cleanup
+        }
+
+        // 6b. Decrement vote_totals for this student's submissions
+        try {
+          const { data: subData } = await supabase
+            .from('vote_submissions')
+            .select('id, category_id, vote_items(teacher_id, vote_count)')
+            .eq('student_id', userId);
+
+          if (subData && Array.isArray(subData)) {
+            for (const sub of subData) {
+              if (sub.vote_items && Array.isArray(sub.vote_items)) {
+                for (const item of sub.vote_items) {
+                  const { data: totRow } = await supabase
+                    .from('vote_totals')
+                    .select('total_votes')
+                    .eq('category_id', sub.category_id)
+                    .eq('teacher_id', item.teacher_id)
+                    .maybeSingle();
+
+                  if (totRow) {
+                    const newTotal = Math.max(0, (totRow.total_votes || 0) - (item.vote_count || 0));
+                    await supabase
+                      .from('vote_totals')
+                      .update({ total_votes: newTotal, updated_at: new Date().toISOString() })
+                      .eq('category_id', sub.category_id)
+                      .eq('teacher_id', item.teacher_id);
+                  }
+                }
+              }
+            }
+          }
+        } catch {
+          // Handled
+        }
+
+        // Direct table deletes
+        await supabase.from('vote_items').delete().in(
+          'submission_id',
+          (await supabase.from('vote_submissions').select('id').eq('student_id', userId)).data?.map((s: any) => s.id) || []
+        );
         await supabase.from('vote_submissions').delete().eq('student_id', userId);
         await supabase.from('appreciation_messages').delete().eq('student_id', userId);
+        await supabase.from('user_sessions').delete().eq('user_id', userId);
         await supabase.from('profiles').delete().eq('id', userId).eq('role', 'student');
+      }
+
+      if (cleanEmail) {
+        await supabase.from('user_sessions').delete().ilike('email', cleanEmail);
+        await supabase.from('profiles').delete().ilike('email', cleanEmail).eq('role', 'student');
       }
 
       // 6c. Broadcast instant force logout event
@@ -1252,6 +1327,7 @@ export async function deleteAllStudentAccounts(): Promise<{ success: boolean }> 
   setLocalStorage('td_revoked_devices', []);
   setLocalStorage('td_revoked_emails', []);
   setLocalStorage('td_revoked_names', []);
+  setLocalStorage('td_category_vote_totals', {});
   localStorage.removeItem('td_bound_student_name');
   localStorage.removeItem('td_device_bound_at');
 
@@ -1280,8 +1356,19 @@ export async function deleteAllStudentAccounts(): Promise<{ success: boolean }> 
   // 4. Delete from Supabase
   if (isSupabaseConfigured) {
     try {
+      try {
+        await supabase.rpc('delete_all_students_rpc');
+      } catch {
+        // Fallback
+      }
+
+      await supabase.from('vote_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await supabase.from('vote_submissions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await supabase.from('vote_totals').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await supabase.from('appreciation_messages').delete().neq('id', '00000000-0000-0000-0000-000000000000');
       await supabase.from('user_sessions').delete().eq('role', 'student');
       await supabase.from('profiles').delete().eq('role', 'student');
+      await supabase.from('profiles').update({ device_id: null }).neq('id', '00000000-0000-0000-0000-000000000000');
 
       const authChannel = supabase.channel('system_auth_channel');
       await authChannel.send({

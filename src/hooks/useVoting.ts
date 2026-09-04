@@ -242,13 +242,19 @@ export function useVoting(categoryId: string, userId?: string) {
 
         const deviceId = getOrCreateDeviceId();
 
+        const finalStudentId =
+          studentId &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(studentId)
+            ? studentId
+            : null;
+
         const startTime = Date.now();
 
         // 4. ATOMIC DATABASE RPC: Execute the single transactional vote submission in PostgreSQL
         const rpcPromise = supabase.rpc('submit_votes', {
           p_category_id: categoryId,
           p_votes: votePayload,
-          p_student_id: studentId || null,
+          p_student_id: finalStudentId,
           p_device_id: deviceId || null,
           p_submission_id: clientSubmissionId,
         });

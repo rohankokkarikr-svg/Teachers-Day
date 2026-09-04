@@ -306,7 +306,7 @@ export default function AdminCategories() {
               category_id: assignCategory.id,
               teacher_id: teacherId,
             },
-            { onConflict: 'category_id,teacher_id' }
+            { onConflict: 'category_id,teacher_id', ignoreDuplicates: true }
           );
         } else {
           await supabase
@@ -332,7 +332,7 @@ export default function AdminCategories() {
     if (isSupabaseConfigured) {
       try {
         const records = allIds.map((tId) => ({ category_id: assignCategory.id, teacher_id: tId }));
-        await supabase.from('category_teachers').upsert(records, { onConflict: 'category_id,teacher_id' });
+        await supabase.from('category_teachers').upsert(records, { onConflict: 'category_id,teacher_id', ignoreDuplicates: true });
         await logAction('Assigned All Teachers to Category', { category: assignCategory.name, count: allIds.length });
       } catch {
         // Handled locally

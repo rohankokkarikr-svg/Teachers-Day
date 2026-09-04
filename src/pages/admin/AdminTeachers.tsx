@@ -17,6 +17,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Sparkles,
+  RefreshCw,
 } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -26,21 +27,21 @@ import Modal from '../../components/ui/Modal';
 import ConfirmationModal from '../../components/ui/ConfirmationModal';
 import LoadingSkeleton from '../../components/ui/LoadingSkeleton';
 import TeacherAvatar from '../../components/ui/TeacherAvatar';
-import { getLocalStorage, setLocalStorage, exportToCSV } from '../../lib/utils';
+import { setLocalStorage, exportToCSV } from '../../lib/utils';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { uploadTeacherPhoto } from '../../lib/imageUtils';
 import { useAdmin } from '../../hooks/useAdmin';
 import { toast } from '../../components/ui/Toast';
 import { INITIAL_TEACHERS_DATA } from '../../data/initialTeachers';
+import { getAllTeachers, resolvePermanentPhoto } from '../../hooks/useTeachers';
 import type { Teacher } from '../../types';
 
 const PAGE_SIZE = 18;
 
 export default function AdminTeachers() {
-  const [teachers, setTeachers] = useState<Teacher[]>(() =>
-    getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA)
-  );
+  const [teachers, setTeachers] = useState<Teacher[]>(() => getAllTeachers());
   const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState<'all' | 'faculty' | 'non_technical'>('all');
   const [selectedDept, setSelectedDept] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const [sortBy, setSortBy] = useState<'name_asc' | 'name_desc' | 'dept' | 'status'>('name_asc');
@@ -55,22 +56,23 @@ export default function AdminTeachers() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isBulkSaving, setIsBulkSaving] = useState(false);
+  const [isSyncingDefaults, setIsSyncingDefaults] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bulkCsvInputRef = useRef<HTMLInputElement>(null);
 
-  const { saveTeacher, deleteTeacher } = useAdmin();
+  const { saveTeacher, deleteTeacher, logAction } = useAdmin();
 
   // Single Form State
   const [name, setName] = useState('');
-  const [department, setDepartment] = useState('');
+  const [department, setDepartment] = useState('BCA');
   const [subject, setSubject] = useState('');
   const [tagline, setTagline] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
   const [isActive, setIsActive] = useState(true);
 
   const fetchTeachers = useCallback(async () => {
-    const local = getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA);
+    const local = getAllTeachers();
     setTeachers(local);
 
     if (!isSupabaseConfigured) {
@@ -92,8 +94,12 @@ export default function AdminTeachers() {
 
       if (error) throw error;
       if (data && data.length > 0) {
-        setTeachers(data as Teacher[]);
-        setLocalStorage('td_admin_teachers', data);
+        const resolvedList = data.map((t: Teacher) => ({
+          ...t,
+          photo_url: resolvePermanentPhoto(t),
+        }));
+        setTeachers(resolvedList);
+        setLocalStorage('td_admin_teachers', resolvedList);
       }
     } catch {
       // Keep local cached teachers
@@ -105,6 +111,27 @@ export default function AdminTeachers() {
   useEffect(() => {
     fetchTeachers();
   }, [fetchTeachers]);
+
+  // Derived faculty vs non-technical counts
+  const facultyCount = useMemo(
+    () =>
+      teachers.filter(
+        (t) =>
+          t.department !== 'Non-Technical Staff' &&
+          !t.department?.toLowerCase().includes('non-technical')
+      ).length,
+    [teachers]
+  );
+
+  const nonTechnicalCount = useMemo(
+    () =>
+      teachers.filter(
+        (t) =>
+          t.department === 'Non-Technical Staff' ||
+          t.department?.toLowerCase().includes('non-technical')
+      ).length,
+    [teachers]
+  );
 
   // Derived departments list
   const departments = useMemo(() => {
@@ -118,6 +145,15 @@ export default function AdminTeachers() {
   // Filtered and sorted teachers
   const filteredTeachers = useMemo(() => {
     let result = teachers.filter((t) => {
+      const isNonTechnical =
+        t.department === 'Non-Technical Staff' ||
+        t.department?.toLowerCase().includes('non-technical');
+
+      const matchesRole =
+        roleFilter === 'all' ||
+        (roleFilter === 'faculty' && !isNonTechnical) ||
+        (roleFilter === 'non_technical' && isNonTechnical);
+
       const matchesSearch =
         t.name.toLowerCase().includes(search.toLowerCase()) ||
         t.department.toLowerCase().includes(search.toLowerCase()) ||
@@ -131,7 +167,7 @@ export default function AdminTeachers() {
         (statusFilter === 'active' && t.is_active) ||
         (statusFilter === 'inactive' && !t.is_active);
 
-      return matchesSearch && matchesDept && matchesStatus;
+      return matchesRole && matchesSearch && matchesDept && matchesStatus;
     });
 
     result.sort((a, b) => {
@@ -143,7 +179,7 @@ export default function AdminTeachers() {
     });
 
     return result;
-  }, [teachers, search, selectedDept, statusFilter, sortBy]);
+  }, [teachers, search, roleFilter, selectedDept, statusFilter, sortBy]);
 
   // Pagination calculations
   const totalPages = Math.max(1, Math.ceil(filteredTeachers.length / PAGE_SIZE));
@@ -155,7 +191,7 @@ export default function AdminTeachers() {
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [search, selectedDept, statusFilter, sortBy]);
+  }, [search, roleFilter, selectedDept, statusFilter, sortBy]);
 
   const activeCount = useMemo(() => teachers.filter((t) => t.is_active).length, [teachers]);
   const inactiveCount = teachers.length - activeCount;
@@ -163,7 +199,7 @@ export default function AdminTeachers() {
   const handleOpenAdd = () => {
     setEditingTeacher(null);
     setName('');
-    setDepartment('');
+    setDepartment(roleFilter === 'non_technical' ? 'Non-Technical Staff' : 'BCA');
     setSubject('');
     setTagline('');
     setPhotoUrl('');
@@ -180,6 +216,41 @@ export default function AdminTeachers() {
     setPhotoUrl(t.photo_url || '');
     setIsActive(t.is_active);
     setIsModalOpen(true);
+  };
+
+  const handleSyncAllDefaults = async () => {
+    setIsSyncingDefaults(true);
+    try {
+      const defaultList = INITIAL_TEACHERS_DATA.map((t) => ({
+        ...t,
+        photo_url: resolvePermanentPhoto(t),
+      }));
+
+      setLocalStorage('td_admin_teachers', defaultList);
+      setTeachers(defaultList);
+
+      if (isSupabaseConfigured) {
+        for (const t of defaultList) {
+          await supabase.from('teachers').upsert({
+            id: t.id,
+            name: t.name,
+            department: t.department,
+            subject: t.subject,
+            tagline: t.tagline,
+            photo_url: t.photo_url,
+            is_active: t.is_active,
+          }, { onConflict: 'id' });
+        }
+      }
+
+      await logAction('Synced Default Teachers & Staff', { count: defaultList.length });
+      window.dispatchEvent(new Event('td_admin_teachers_updated'));
+      toast.success('Sync Complete', 'All 15 Teaching Faculty and 4 Non-Technical Staff photos and details restored.');
+    } catch {
+      toast.error('Sync Notice', 'Local records updated.');
+    } finally {
+      setIsSyncingDefaults(false);
+    }
   };
 
   const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -229,11 +300,11 @@ export default function AdminTeachers() {
 
     setIsSaving(false);
     if (res.success) {
-      toast.success(editingTeacher ? 'Teacher Updated' : 'Teacher Added');
+      toast.success(editingTeacher ? 'Record Updated' : 'Record Added');
       setIsModalOpen(false);
       fetchTeachers();
     } else {
-      toast.error('Error', res.error || 'Failed to save teacher.');
+      toast.error('Error', res.error || 'Failed to save record.');
     }
   };
 
@@ -249,7 +320,7 @@ export default function AdminTeachers() {
     });
 
     if (res.success) {
-      toast.success(`Teacher ${!teacher.is_active ? 'Activated' : 'Deactivated'}`);
+      toast.success(`Member ${!teacher.is_active ? 'Activated' : 'Deactivated'}`);
       fetchTeachers();
     }
   };
@@ -262,17 +333,17 @@ export default function AdminTeachers() {
     setDeleteTarget(null);
 
     if (res.success) {
-      toast.success('Teacher Deleted', `${deleteTarget.name} was successfully removed.`);
+      toast.success('Record Deleted', `${deleteTarget.name} was successfully removed.`);
       fetchTeachers();
     } else {
-      toast.error('Error', res.error || 'Failed to delete teacher.');
+      toast.error('Error', res.error || 'Failed to delete record.');
     }
   };
 
   // Bulk Import CSV / Text Handler
   const handleBulkImport = async () => {
     if (!bulkText.trim()) {
-      toast.error('Empty Data', 'Please enter teacher records or upload a CSV file.');
+      toast.error('Empty Data', 'Please enter teacher/staff records or upload a CSV file.');
       return;
     }
 
@@ -316,7 +387,7 @@ export default function AdminTeachers() {
     setBulkText('');
 
     if (addedCount > 0) {
-      toast.success('Bulk Import Complete', `Successfully added ${addedCount} candidate teachers.`);
+      toast.success('Bulk Import Complete', `Successfully added ${addedCount} records.`);
       fetchTeachers();
     } else {
       toast.warning('No Valid Rows', 'Ensure rows follow: "Name, Department, Subject, Tagline"');
@@ -346,17 +417,24 @@ export default function AdminTeachers() {
   };
 
   const handleExportTeachersCSV = () => {
-    const rows = teachers.map((t) => ({
-      ID: t.id,
-      Name: t.name,
-      Department: t.department,
-      Subject: t.subject || '',
-      Tagline: t.tagline || '',
-      Status: t.is_active ? 'Active' : 'Inactive',
-    }));
+    const rows = teachers.map((t) => {
+      const isNonTech =
+        t.department === 'Non-Technical Staff' ||
+        t.department?.toLowerCase().includes('non-technical');
+      return {
+        ID: t.id,
+        Name: t.name,
+        Section: isNonTech ? 'Non-Technical Staff' : 'Teaching Faculty',
+        Department: t.department,
+        Subject_or_Role: t.subject || '',
+        Tagline: t.tagline || '',
+        Photo_File: t.photo_url || '',
+        Status: t.is_active ? 'Active' : 'Inactive',
+      };
+    });
 
-    exportToCSV(rows, `teachers_directory_${new Date().toISOString().slice(0, 10)}`);
-    toast.success('Directory Exported', 'Teacher directory CSV file downloaded.');
+    exportToCSV(rows, `faculty_and_staff_directory_${new Date().toISOString().slice(0, 10)}`);
+    toast.success('Directory Exported', 'Faculty & Staff directory CSV file downloaded.');
   };
 
   return (
@@ -366,15 +444,24 @@ export default function AdminTeachers() {
         <div>
           <h1 className="section-title flex items-center gap-2">
             <GraduationCap className="text-primary-400" size={24} />
-            Teacher Management
+            Teachers & Non-Technical Staff Management
           </h1>
           <p className="section-subtitle">
-            Manage candidate teachers, assign to awards, and monitor nominees ({teachers.length} total across{' '}
-            {departments.length} departments)
+            Manage 15 Teaching Faculty and 4 Non-Technical Staff members ({teachers.length} total nominees across {departments.length} departments)
           </p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            icon={<RefreshCw size={14} className={isSyncingDefaults ? 'animate-spin' : ''} />}
+            onClick={handleSyncAllDefaults}
+            isLoading={isSyncingDefaults}
+            title="Restore and synchronize the 19 standard faculty and non-technical staff records"
+          >
+            Sync Default 19
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -400,7 +487,7 @@ export default function AdminTeachers() {
             icon={<Plus size={16} />}
             onClick={handleOpenAdd}
           >
-            Add Teacher
+            Add Member
           </Button>
         </div>
       </div>
@@ -412,28 +499,18 @@ export default function AdminTeachers() {
             <Users size={20} />
           </div>
           <div>
-            <p className="text-xs text-surface-400">Total Teachers</p>
+            <p className="text-xs text-surface-400">Total Nominees</p>
             <p className="text-xl font-bold text-white">{teachers.length}</p>
           </div>
         </Card>
 
         <Card variant="flat" padding="sm" className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center flex-shrink-0">
-            <CheckCircle2 size={20} />
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/15 text-indigo-400 flex items-center justify-center flex-shrink-0">
+            <GraduationCap size={20} />
           </div>
           <div>
-            <p className="text-xs text-surface-400">Active Candidates</p>
-            <p className="text-xl font-bold text-emerald-400">{activeCount}</p>
-          </div>
-        </Card>
-
-        <Card variant="flat" padding="sm" className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-surface-700/40 text-surface-400 flex items-center justify-center flex-shrink-0">
-            <XCircle size={20} />
-          </div>
-          <div>
-            <p className="text-xs text-surface-400">Inactive</p>
-            <p className="text-xl font-bold text-surface-300">{inactiveCount}</p>
+            <p className="text-xs text-surface-400">Teaching Faculty</p>
+            <p className="text-xl font-bold text-indigo-400">{facultyCount}</p>
           </div>
         </Card>
 
@@ -442,10 +519,62 @@ export default function AdminTeachers() {
             <Building size={20} />
           </div>
           <div>
-            <p className="text-xs text-surface-400">Departments</p>
-            <p className="text-xl font-bold text-gold-400">{departments.length}</p>
+            <p className="text-xs text-surface-400">Non-Technical Staff</p>
+            <p className="text-xl font-bold text-gold-400">{nonTechnicalCount}</p>
           </div>
         </Card>
+
+        <Card variant="flat" padding="sm" className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center flex-shrink-0">
+            <CheckCircle2 size={20} />
+          </div>
+          <div>
+            <p className="text-xs text-surface-400">Active Status</p>
+            <p className="text-xl font-bold text-emerald-400">{activeCount}</p>
+          </div>
+        </Card>
+      </div>
+
+      {/* Role / Section Switcher Tabs */}
+      <div className="flex items-center gap-2 p-1.5 bg-surface-900/90 border border-surface-700/60 rounded-2xl w-full sm:w-fit text-xs font-semibold shadow-inner">
+        <button
+          type="button"
+          onClick={() => setRoleFilter('all')}
+          className={`flex-1 sm:flex-none px-4 py-2 rounded-xl transition-all flex items-center justify-center gap-2 ${
+            roleFilter === 'all'
+              ? 'bg-primary-500 text-white shadow-sm'
+              : 'text-surface-400 hover:text-white'
+          }`}
+        >
+          <Users size={14} />
+          <span>All Directory ({teachers.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setRoleFilter('faculty')}
+          className={`flex-1 sm:flex-none px-4 py-2 rounded-xl transition-all flex items-center justify-center gap-2 ${
+            roleFilter === 'faculty'
+              ? 'bg-indigo-600 text-white shadow-sm'
+              : 'text-surface-400 hover:text-white'
+          }`}
+        >
+          <GraduationCap size={14} />
+          <span>Teaching Faculty ({facultyCount})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setRoleFilter('non_technical')}
+          className={`flex-1 sm:flex-none px-4 py-2 rounded-xl transition-all flex items-center justify-center gap-2 ${
+            roleFilter === 'non_technical'
+              ? 'bg-amber-600 text-white shadow-sm'
+              : 'text-surface-400 hover:text-white'
+          }`}
+        >
+          <Building size={14} />
+          <span>Non-Technical Staff ({nonTechnicalCount})</span>
+        </button>
       </div>
 
       {/* Filter and Search Toolbar */}
@@ -454,7 +583,7 @@ export default function AdminTeachers() {
           {/* Search Box */}
           <div className="flex-1 max-w-md">
             <Input
-              placeholder="Search by name, department, subject, tagline..."
+              placeholder="Search by name, department, role, subject, tagline..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               icon={<Search size={16} />}
@@ -541,14 +670,14 @@ export default function AdminTeachers() {
                     : 'bg-surface-900/80 border border-surface-700/50 text-surface-400 hover:text-white'
                 }`}
               >
-                {dept} ({count})
+                {dept === 'Non-Technical Staff' ? '🏢 Non-Technical Staff' : dept} ({count})
               </button>
             );
           })}
         </div>
       </div>
 
-      {/* Teachers Grid */}
+      {/* Teachers & Staff Grid */}
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {Array.from({ length: 6 }).map((_, i) => (
@@ -557,15 +686,16 @@ export default function AdminTeachers() {
         </div>
       ) : filteredTeachers.length === 0 ? (
         <Card className="p-12 text-center text-surface-400 space-y-3">
-          <p className="text-base font-semibold text-white">No teachers found</p>
+          <p className="text-base font-semibold text-white">No members found</p>
           <p className="text-xs max-w-sm mx-auto">
-            No candidate teachers match your search query or department filter.
+            No faculty or staff members match your search query or department filter.
           </p>
           <Button
             variant="outline"
             size="sm"
             onClick={() => {
               setSearch('');
+              setRoleFilter('all');
               setSelectedDept('ALL');
               setStatusFilter('all');
             }}
@@ -576,74 +706,92 @@ export default function AdminTeachers() {
       ) : (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {paginatedTeachers.map((teacher) => (
-              <Card key={teacher.id} variant="default" className="relative group flex flex-col justify-between">
-                <div className="flex items-start gap-3">
-                  {/* Photo or Initials Avatar */}
-                  <TeacherAvatar
-                    name={teacher.name}
-                    photoUrl={teacher.photo_url}
-                    size="md"
-                    rounded="xl"
-                    className="!w-12 !h-12 shadow-md"
-                  />
+            {paginatedTeachers.map((teacher) => {
+              const isNonTech =
+                teacher.department === 'Non-Technical Staff' ||
+                teacher.department?.toLowerCase().includes('non-technical');
 
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <h3 className="text-sm font-semibold text-white truncate" title={teacher.name}>
-                        {teacher.name}
-                      </h3>
-                      <Badge variant={teacher.is_active ? 'success' : 'neutral'}>
-                        {teacher.is_active ? 'Active' : 'Inactive'}
-                      </Badge>
+              return (
+                <Card key={teacher.id} variant="default" className="relative group flex flex-col justify-between">
+                  <div className="flex items-start gap-3">
+                    {/* Photo or Initials Avatar */}
+                    <TeacherAvatar
+                      name={teacher.name}
+                      photoUrl={teacher.photo_url}
+                      size="md"
+                      rounded="xl"
+                      className="!w-12 !h-12 shadow-md"
+                    />
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-1 mb-1">
+                        <h3 className="text-sm font-semibold text-white truncate" title={teacher.name}>
+                          {teacher.name}
+                        </h3>
+                        <Badge variant={teacher.is_active ? 'success' : 'neutral'} className="!text-[10px] !py-0">
+                          {teacher.is_active ? 'Active' : 'Inactive'}
+                        </Badge>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                            isNonTech
+                              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                              : 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/30'
+                          }`}
+                        >
+                          {isNonTech ? '🏢 Non-Technical Staff' : '🎓 Teaching Faculty'}
+                        </span>
+                        <span className="text-[11px] text-surface-400 truncate">
+                          {teacher.department}
+                        </span>
+                      </div>
+
+                      {teacher.subject && (
+                        <p className="text-[11px] text-surface-300 truncate mt-0.5 font-medium">
+                          {teacher.subject}
+                        </p>
+                      )}
+                      {teacher.tagline && (
+                        <p className="text-[10px] text-surface-500 italic mt-1 truncate" title={teacher.tagline}>
+                          "{teacher.tagline}"
+                        </p>
+                      )}
                     </div>
-
-                    <p className="text-xs text-primary-300 font-medium truncate">
-                      {teacher.department}
-                    </p>
-                    {teacher.subject && (
-                      <p className="text-[11px] text-surface-400 truncate mt-0.5">
-                        {teacher.subject}
-                      </p>
-                    )}
-                    {teacher.tagline && (
-                      <p className="text-[10px] text-surface-500 italic mt-1 truncate" title={teacher.tagline}>
-                        "{teacher.tagline}"
-                      </p>
-                    )}
                   </div>
-                </div>
 
-                {/* Actions Footer */}
-                <div className="mt-4 pt-3 border-t border-surface-700/50 flex items-center justify-end gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon={teacher.is_active ? <XCircle size={14} /> : <CheckCircle2 size={14} />}
-                    onClick={() => handleToggleActive(teacher)}
-                    className="text-xs"
-                  >
-                    {teacher.is_active ? 'Deactivate' : 'Activate'}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    icon={<Edit2 size={14} />}
-                    onClick={() => handleOpenEdit(teacher)}
-                    className="text-xs"
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon={<Trash2 size={14} className="text-surface-500 hover:text-rose-400" />}
-                    onClick={() => setDeleteTarget(teacher)}
-                    aria-label={`Delete ${teacher.name}`}
-                  />
-                </div>
-              </Card>
-            ))}
+                  {/* Actions Footer */}
+                  <div className="mt-4 pt-3 border-t border-surface-700/50 flex items-center justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={teacher.is_active ? <XCircle size={14} /> : <CheckCircle2 size={14} />}
+                      onClick={() => handleToggleActive(teacher)}
+                      className="text-xs"
+                    >
+                      {teacher.is_active ? 'Deactivate' : 'Activate'}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={<Edit2 size={14} />}
+                      onClick={() => handleOpenEdit(teacher)}
+                      className="text-xs"
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={<Trash2 size={14} className="text-surface-500 hover:text-rose-400" />}
+                      onClick={() => setDeleteTarget(teacher)}
+                      aria-label={`Delete ${teacher.name}`}
+                    />
+                  </div>
+                </Card>
+              );
+            })}
           </div>
 
           {/* Pagination Toolbar */}
@@ -651,7 +799,7 @@ export default function AdminTeachers() {
             <div className="flex items-center justify-between pt-4 border-t border-surface-700/50 text-xs text-surface-400">
               <div>
                 Showing {(currentPage - 1) * PAGE_SIZE + 1}–
-                {Math.min(currentPage * PAGE_SIZE, filteredTeachers.length)} of {filteredTeachers.length} teachers
+                {Math.min(currentPage * PAGE_SIZE, filteredTeachers.length)} of {filteredTeachers.length} members
               </div>
 
               <div className="flex items-center gap-1.5">
@@ -688,7 +836,7 @@ export default function AdminTeachers() {
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        title={editingTeacher ? 'Edit Teacher' : 'Add New Teacher'}
+        title={editingTeacher ? 'Edit Member Profile' : 'Add New Teacher / Staff Member'}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Photo Upload & Preview */}
@@ -740,7 +888,7 @@ export default function AdminTeachers() {
                   </Button>
                 </div>
                 <Input
-                  placeholder="Or paste image URL here..."
+                  placeholder="Or /teachers/teacher_1.jpeg or paste image URL..."
                   value={photoUrl}
                   onChange={(e) => setPhotoUrl(e.target.value)}
                   className="!py-1.5 !text-xs"
@@ -751,7 +899,7 @@ export default function AdminTeachers() {
 
           <Input
             label="Full Name *"
-            placeholder="e.g. Dr. Priya Sharma"
+            placeholder="e.g. Prof Prashant Kivati. or Mr Ravi Bennole."
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
@@ -759,43 +907,45 @@ export default function AdminTeachers() {
 
           <div>
             <label className="block text-xs font-semibold text-surface-300 uppercase tracking-wider mb-1.5">
-              Department *
+              Department & Role Section *
             </label>
             <div className="space-y-2">
               <Input
-                placeholder="e.g. Computer Science, Mathematics, Physics..."
+                placeholder="e.g. BCA or Non-Technical Staff"
                 value={department}
                 onChange={(e) => setDepartment(e.target.value)}
                 required
               />
-              {departments.length > 0 && (
-                <div className="flex items-center gap-1 flex-wrap text-[11px] text-surface-400">
-                  <span>Quick Select:</span>
-                  {departments.slice(0, 5).map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => setDepartment(d)}
-                      className="px-2 py-0.5 rounded bg-surface-800 hover:bg-surface-700 text-surface-300 hover:text-white transition-colors"
-                    >
-                      {d}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-surface-400">
+                <span>Quick Preset:</span>
+                <button
+                  type="button"
+                  onClick={() => setDepartment('BCA')}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/40 text-indigo-300 transition-colors font-medium"
+                >
+                  🎓 BCA (Teaching Faculty)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDepartment('Non-Technical Staff')}
+                  className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 transition-colors font-medium"
+                >
+                  🏢 Non-Technical Staff
+                </button>
+              </div>
             </div>
           </div>
 
           <Input
-            label="Subject / Specialization (Optional)"
-            placeholder="e.g. Data Structures & Algorithms"
+            label="Subject / Role Focus (Optional)"
+            placeholder="e.g. Cybersecurity & Ethical Hacking or Event Coordination"
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
           />
 
           <Input
-            label="Tagline / Teaching Motto (Optional)"
-            placeholder="e.g. Making algorithms intuitive and fun!"
+            label="Tagline / Motto (Optional)"
+            placeholder="e.g. Securing digital assets and cyber landscapes."
             value={tagline}
             onChange={(e) => setTagline(e.target.value)}
           />
@@ -803,13 +953,13 @@ export default function AdminTeachers() {
           <div className="flex items-center gap-2 pt-2">
             <input
               type="checkbox"
-              id="is_active_check"
+              id="teacher_active_check"
               checked={isActive}
               onChange={(e) => setIsActive(e.target.checked)}
-              className="rounded bg-surface-800 border-surface-600 text-primary-500 focus:ring-primary-500"
+              className="rounded bg-surface-800 border-surface-600 text-primary-500"
             />
-            <label htmlFor="is_active_check" className="text-sm text-surface-200 cursor-pointer">
-              Active candidate (eligible for voting ballots)
+            <label htmlFor="teacher_active_check" className="text-sm text-surface-200">
+              Active candidate (eligible for category awards & voting)
             </label>
           </div>
 
@@ -822,17 +972,17 @@ export default function AdminTeachers() {
               Cancel
             </Button>
             <Button type="submit" variant="primary" isLoading={isSaving}>
-              {editingTeacher ? 'Save Changes' : 'Create Teacher'}
+              {editingTeacher ? 'Save Changes' : 'Create Record'}
             </Button>
           </div>
         </form>
       </Modal>
 
-      {/* Bulk Add / Quick Import Modal */}
+      {/* Bulk Add Modal */}
       <Modal
         isOpen={isBulkModalOpen}
         onClose={() => !isBulkSaving && setIsBulkModalOpen(false)}
-        title="Bulk Import Multiple Teachers"
+        title="Bulk Import Faculty & Staff"
         size="lg"
       >
         <div className="space-y-4">
@@ -842,12 +992,12 @@ export default function AdminTeachers() {
               Quick Batch Adding Format
             </p>
             <p>
-              Paste multiple teacher rows below (1 teacher per line), formatted as comma-separated values:
+              Paste multiple teacher or staff rows below (1 member per line), formatted as:
             </p>
             <p className="font-mono bg-surface-900/80 p-2 rounded text-[11px] text-surface-300">
-              Dr. Priya Sharma, Computer Science, Data Structures, Making algorithms fun!
+              Prof Prashant Kivati., BCA, Cybersecurity, Securing digital assets
               <br />
-              Prof. Rajesh Kumar, Mathematics, Calculus, Numbers tell stories
+              Mr Ravi Bennole., Non-Technical Staff, Event Operations, Dedicated support
             </p>
           </div>
 
@@ -881,7 +1031,7 @@ export default function AdminTeachers() {
               rows={8}
               value={bulkText}
               onChange={(e) => setBulkText(e.target.value)}
-              placeholder="Name, Department, Subject (optional), Tagline (optional)&#10;Dr. Alan Turing, Computer Science, Cryptography, Breaking complex codes&#10;Dr. Marie Curie, Physics, Radiation, Radiating curiosity"
+              placeholder={`Prof Prashant Kivati., BCA, Cybersecurity, Securing digital assets\nMr Ravi Bennole., Non-Technical Staff, Event Coordination, Dedicated support`}
               className="w-full rounded-xl bg-surface-900 border border-surface-700/60 p-3 text-xs text-white font-mono focus:outline-none focus:border-primary-500"
             />
           </div>
@@ -906,7 +1056,7 @@ export default function AdminTeachers() {
                 onClick={handleBulkImport}
                 icon={<Plus size={14} />}
               >
-                Import All Teachers
+                Import All Members
               </Button>
             </div>
           </div>
@@ -918,10 +1068,10 @@ export default function AdminTeachers() {
         isOpen={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
         onConfirm={handleConfirmDelete}
-        title="Delete Teacher"
+        title="Delete Member"
         message={`Are you sure you want to delete ${deleteTarget?.name}?`}
-        warning="This teacher will be permanently removed from all voting ballots and category assignments."
-        confirmText="Delete Teacher"
+        warning="This candidate will be removed from award category ballots and directory."
+        confirmText="Delete Member"
         cancelText="Cancel"
         variant="danger"
         isLoading={isDeleting}

@@ -22,17 +22,15 @@ import { getLocalStorage, setLocalStorage } from '../../lib/utils';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useAdmin } from '../../hooks/useAdmin';
 import { toast } from '../../components/ui/Toast';
-import { INITIAL_TEACHERS_DATA } from '../../data/initialTeachers';
 import { INITIAL_CATEGORIES_DATA, INITIAL_CATEGORY_ASSIGNMENTS } from '../../data/initialCategories';
+import { getAllTeachers, resolvePermanentPhoto } from '../../hooks/useTeachers';
 import type { Category, Teacher } from '../../types';
 
 export default function AdminCategories() {
   const [categories, setCategories] = useState<Category[]>(() =>
     getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES_DATA)
   );
-  const [teachers, setTeachers] = useState<Teacher[]>(() =>
-    getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA)
-  );
+  const [teachers, setTeachers] = useState<Teacher[]>(() => getAllTeachers());
   const [categoryAssignments, setCategoryAssignments] = useState<Record<string, string[]>>(() =>
     getLocalStorage<Record<string, string[]>>('td_category_teacher_assignments', INITIAL_CATEGORY_ASSIGNMENTS)
   );
@@ -60,7 +58,7 @@ export default function AdminCategories() {
 
   const fetchData = useCallback(async () => {
     const localCats = getLocalStorage<Category[]>('td_admin_categories', INITIAL_CATEGORIES_DATA);
-    const localTeachers = getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA);
+    const localTeachers = getAllTeachers();
     const localAssignments = getLocalStorage<Record<string, string[]>>(
       'td_category_teacher_assignments',
       INITIAL_CATEGORY_ASSIGNMENTS
@@ -94,8 +92,12 @@ export default function AdminCategories() {
         setLocalStorage('td_admin_categories', catRes.data);
       }
       if (teacherRes?.data && teacherRes.data.length > 0) {
-        setTeachers(teacherRes.data as Teacher[]);
-        setLocalStorage('td_admin_teachers', teacherRes.data);
+        const resolvedTeachers: Teacher[] = teacherRes.data.map((t: Teacher) => ({
+          ...t,
+          photo_url: resolvePermanentPhoto(t),
+        }));
+        setTeachers(resolvedTeachers);
+        setLocalStorage('td_admin_teachers', resolvedTeachers);
       }
 
       // Sync category-teacher assignments

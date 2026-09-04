@@ -2,8 +2,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { getLocalStorage, setLocalStorage, exportToCSV } from '../lib/utils';
 import { clearDeviceBindingsAndVotes } from '../lib/deviceId';
-import { INITIAL_TEACHERS_DATA } from '../data/initialTeachers';
 import { INITIAL_CATEGORIES_DATA } from '../data/initialCategories';
+import { getAllTeachers } from './useTeachers';
 import type { Teacher, Category, VotingSettings, AdminAction, Profile } from '../types';
 
 export interface SystemStats {
@@ -383,7 +383,7 @@ export function useAdmin() {
 
   // CRUD Teacher
   const saveTeacher = async (teacher: Partial<Teacher>): Promise<{ success: boolean; error?: string }> => {
-    const teacherList = getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA);
+    const teacherList = getAllTeachers();
     const teacherId = teacher.id || `teacher-${Date.now()}`;
     const fullTeacher: Teacher = {
       id: teacherId,
@@ -542,7 +542,7 @@ export function useAdmin() {
 
   // Delete Teacher
   const deleteTeacher = async (teacherId: string): Promise<{ success: boolean; error?: string }> => {
-    const teacherList = getLocalStorage<Teacher[]>('td_admin_teachers', INITIAL_TEACHERS_DATA);
+    const teacherList = getAllTeachers();
     const teacherToDelete = teacherList.find((t) => t.id === teacherId);
     const updatedList = teacherList.filter((t) => t.id !== teacherId);
     setLocalStorage('td_admin_teachers', updatedList);

@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Heart, Send, MessageCircle, Sparkles, UserCheck } from 'lucide-react';
+import { Heart, Send, MessageCircle, Sparkles, Users } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
 import { toast } from '../../components/ui/Toast';
 import { getLocalStorage, setLocalStorage } from '../../lib/utils';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
-import { useTeachers } from '../../hooks/useTeachers';
 import { useAuthContext } from '../../contexts/AuthContext';
 import type { AppreciationMessage } from '../../types';
 
@@ -23,9 +22,7 @@ const cardColors = [
 export default function AppreciationPage() {
   const [messages, setMessages] = useState<AppreciationMessage[]>(() => getLocalStorage<AppreciationMessage[]>('td_admin_messages', []));
   const [message, setMessage] = useState('');
-  const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { teachers } = useTeachers();
   const { user } = useAuthContext();
   const maxLength = 280;
 
@@ -49,7 +46,7 @@ export default function AppreciationPage() {
     try {
       const { data, error } = await supabase
         .from('appreciation_messages')
-        .select('*, teacher:teachers(name)')
+        .select('*')
         .in('status', ['approved', 'featured'])
         .order('created_at', { ascending: false });
 
@@ -117,14 +114,11 @@ export default function AppreciationPage() {
 
     setIsSubmitting(true);
     try {
-      const selectedTeacher = teachers.find((t) => t.id === selectedTeacherId);
       const studentIdentifier = user?.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : '33333333-0000-0000-0000-000000000001');
 
       const newMsg: AppreciationMessage = {
         id: 'msg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
         student_id: studentIdentifier,
-        teacher_id: selectedTeacherId || undefined,
-        teacher: selectedTeacher || undefined,
         message: message.trim(),
         status: 'approved', // Auto-approved for real-time display
         created_at: new Date().toISOString(),
@@ -141,7 +135,6 @@ export default function AppreciationPage() {
           await supabase.from('appreciation_messages').insert({
             student_id: studentIdentifier.includes('-') && studentIdentifier.length === 36 ? studentIdentifier : null,
             message: message.trim(),
-            teacher_id: selectedTeacherId || null,
             status: 'approved',
           });
         } catch {
@@ -151,7 +144,6 @@ export default function AppreciationPage() {
 
       toast.success('Message Published!', 'Thank you for sharing your appreciation.');
       setMessage('');
-      setSelectedTeacherId('');
       fetchMessages();
     } catch {
       toast.error('Submission Failed', 'Please try again.');
@@ -170,10 +162,10 @@ export default function AppreciationPage() {
       >
         <h1 className="section-title flex items-center gap-2">
           <Heart className="text-rose-400" size={24} />
-          Appreciation Wall
+          General Appreciation Wall
         </h1>
         <p className="section-subtitle">
-          Share your gratitude — messages are real-time, celebrated and cherished
+          Share your gratitude — post heartfelt notes celebrating all our wonderful teachers and staff members
         </p>
       </motion.div>
 
@@ -192,31 +184,18 @@ export default function AppreciationPage() {
               <textarea
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
-                placeholder="Write a heartfelt message for your teachers..."
+                placeholder="Write a heartfelt note for all teachers and staff..."
                 maxLength={maxLength}
                 rows={3}
                 className="w-full bg-transparent text-sm text-surface-100 placeholder:text-surface-500 resize-none focus:outline-none border-b border-surface-700/60 pb-2"
                 aria-label="Appreciation message"
               />
 
-              {/* Teacher selector (optional) */}
+              {/* General Dedication Tag & Submit Button */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <UserCheck size={14} className="text-surface-400" />
-                  <select
-                    value={selectedTeacherId}
-                    onChange={(e) => setSelectedTeacherId(e.target.value)}
-                    className="bg-surface-900 border border-surface-700/70 rounded-lg px-2.5 py-1 text-xs text-surface-200 focus:outline-none focus:border-primary-500"
-                  >
-                    <option value="">Dedicate to (All Teachers / General)</option>
-                    {[...teachers]
-                      .sort((a, b) => a.name.localeCompare(b.name))
-                      .map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name} — {t.department}
-                        </option>
-                      ))}
-                  </select>
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-lg bg-surface-900 border border-surface-700/60 text-xs text-gold-300">
+                  <Users size={13} className="text-gold-400" />
+                  <span>General Section • All Teachers & Staff</span>
                 </div>
 
                 <div className="flex items-center justify-between sm:justify-end gap-3">
@@ -247,7 +226,7 @@ export default function AppreciationPage() {
       {/* Messages Wall */}
       {messages.length === 0 ? (
         <Card className="p-8 text-center text-surface-400 text-sm">
-          No appreciation messages posted yet. Be the first to share a heartfelt note for your teachers!
+          No appreciation messages posted yet. Be the first to share a heartfelt note for our teachers and staff!
         </Card>
       ) : (
         <div className="columns-1 sm:columns-2 gap-3 space-y-3">
@@ -266,14 +245,13 @@ export default function AppreciationPage() {
               >
                 <div className="p-4">
                   <div className="flex items-center justify-between gap-2 mb-2">
-                    {msg.status === 'featured' && (
+                    {msg.status === 'featured' ? (
                       <Badge variant="gold" icon={<Sparkles size={10} />}>
-                        Featured
+                        Featured Note
                       </Badge>
-                    )}
-                    {msg.teacher?.name && (
-                      <span className="text-[11px] font-semibold text-primary-300">
-                        To: {msg.teacher.name}
+                    ) : (
+                      <span className="text-[11px] font-medium text-surface-400 flex items-center gap-1">
+                        <Heart size={11} className="text-rose-400" /> General Note
                       </span>
                     )}
                   </div>

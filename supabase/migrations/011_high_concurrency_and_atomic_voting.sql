@@ -8,11 +8,13 @@
 SET lock_timeout = '5s';
 
 -- --------------------------------------------------------
--- 1. Clean Up Legacy Overloaded submit_votes Functions
+-- 1. Clean Up Legacy Functions & Overloads (Pre-requisite for Return Type Changes)
 -- --------------------------------------------------------
 DROP FUNCTION IF EXISTS public.submit_votes(UUID, JSONB);
 DROP FUNCTION IF EXISTS public.submit_votes(UUID, JSONB, TEXT);
 DROP FUNCTION IF EXISTS public.submit_votes(UUID, JSONB, UUID, TEXT, UUID);
+DROP FUNCTION IF EXISTS public.get_category_leaderboard(UUID);
+DROP FUNCTION IF EXISTS public.verify_vote_integrity();
 
 -- --------------------------------------------------------
 -- 2. Master Atomic submit_votes RPC Function

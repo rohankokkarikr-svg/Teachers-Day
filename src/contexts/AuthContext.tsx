@@ -10,7 +10,7 @@ import {
 import {
   recordUserLoginSession,
   isSessionRevoked,
-  isUserAccessBlocked,
+  checkUserAccessAllowed,
   updateSessionHeartbeat,
 } from '../lib/sessionService';
 import { toast } from '../components/ui/Toast';
@@ -96,19 +96,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               const parsedProfile = JSON.parse(savedProfile);
               const deviceId = getOrCreateDeviceId();
 
-              // Check if session or account was revoked / blocked while offline
+              // Check if session was revoked while offline / remotely
               if (parsedProfile.role !== 'admin') {
-                const isBlocked =
-                  isSessionRevoked(parsedUser.id, deviceId, parsedProfile.email, parsedProfile.full_name) ||
-                  (await isUserAccessBlocked({
-                    userId: parsedUser.id,
-                    email: parsedProfile.email,
-                    name: parsedProfile.full_name,
-                    deviceId,
-                  }));
+                const accessCheck = await checkUserAccessAllowed({
+                  userId: parsedUser.id,
+                  name: parsedProfile.full_name,
+                  email: parsedProfile.email,
+                  deviceId,
+                });
 
-                if (isBlocked) {
-                  handleEnforceForcedLogout('Access Restricted: Your account has been logged out by the administrator.');
+                if (!accessCheck.allowed) {
+                  handleEnforceForcedLogout(
+                    accessCheck.reason || 'Your account access has been revoked by the administrator.'
+                  );
                   return;
                 }
               }
@@ -187,7 +187,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const currentProfile = profileRef.current;
       if (!currentUser || currentProfile?.role === 'admin') return;
 
-      if (isSessionRevoked(currentUser.id, currentDeviceId)) {
+      if (
+        isSessionRevoked(
+          currentUser.id,
+          currentDeviceId,
+          currentProfile?.full_name,
+          currentProfile?.email || currentUser.email
+        )
+      ) {
         handleEnforceForcedLogout();
       }
     };
@@ -213,7 +220,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      if (detail?.userId === currentUser.id || detail?.deviceId === currentDeviceId) {
+      const matchId = detail?.userId === currentUser.id;
+      const matchDevice = detail?.deviceId === currentDeviceId;
+      const matchEmail = detail?.email && detail?.email?.toLowerCase() === (currentProfile?.email || currentUser.email)?.toLowerCase();
+
+      if (matchId || matchDevice || matchEmail) {
         handleEnforceForcedLogout();
         return;
       }
@@ -244,7 +255,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const currentProfile = profileRef.current;
           if (!currentUser || currentProfile?.role === 'admin') return;
 
-          if (data?.userId === currentUser.id || data?.deviceId === currentDeviceId) {
+          const matchId = data?.userId === currentUser.id;
+          const matchDevice = data?.deviceId === currentDeviceId;
+          const matchEmail = data?.email && data?.email?.toLowerCase() === (currentProfile?.email || currentUser.email)?.toLowerCase();
+
+          if (matchId || matchDevice || matchEmail) {
             handleEnforceForcedLogout();
           }
         })
@@ -384,8 +399,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const deviceId = getOrCreateDeviceId();
+    const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
+    const email = `${slug}@student.college`;
 
-    // 1. Anti-Abuse: Check local & cookie device binding
+    // 1. Retrieve existing student ID if present
+    let studentId: string | null = null;
+
+    if (isSupabaseConfigured) {
+      try {
+        const { data: existingProfile } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('email', email)
+          .maybeSingle();
+
+        if (existingProfile?.id) {
+          studentId = existingProfile.id;
+        }
+      } catch {
+        // Fallback to local
+      }
+    }
+
+    if (!studentId) {
+      const storedId = localStorage.getItem(`td_student_id_${slug}`);
+      if (storedId) {
+        studentId = storedId;
+      } else {
+        studentId =
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
+        localStorage.setItem(`td_student_id_${slug}`, studentId);
+      }
+    }
+
+    // 2. CRITICAL ACCESS CHECK: Check if user, name, email, or device was revoked by admin
+    const accessCheck = await checkUserAccessAllowed({
+      userId: studentId,
+      name: cleanName,
+      email,
+      deviceId,
+    });
+
+    if (!accessCheck.allowed) {
+      return {
+        success: false,
+        error:
+          accessCheck.reason ||
+          'Access Denied: Your account access has been revoked by the administrator. You cannot log in until an administrator grants you access.',
+      };
+    }
+
+    // 3. Anti-Abuse: Check local & cookie device binding
     const deviceCheck = isDeviceBoundToDifferentStudent(cleanName);
     if (deviceCheck.isBlocked && deviceCheck.boundName) {
       return {
@@ -394,7 +460,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
     }
 
-    // 2. Anti-Abuse: Check cloud device binding in Supabase
+    // 4. Anti-Abuse: Check cloud device binding in Supabase
     if (isSupabaseConfigured) {
       try {
         const { data: cloudProfiles } = await supabase
@@ -420,59 +486,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // 3. Bind this device to the student name
+    // 5. Bind this device to the student name
     bindDeviceToStudent(cleanName);
-
-    const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.');
-    const email = `${slug}@student.college`;
-    
-    // 4. Retrieve existing student ID to avoid duplicate row creation
-    let studentId: string | null = null;
-
-    if (isSupabaseConfigured) {
-      try {
-        const { data: existingProfile } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('email', email)
-          .maybeSingle();
-
-        if (existingProfile?.id) {
-          studentId = existingProfile.id;
-        }
-      } catch {
-        // Fallback to local
-      }
-    }
-
-    if (!studentId) {
-      const storedId = localStorage.getItem(`td_student_id_${slug}`);
-      if (storedId) {
-        studentId = storedId;
-      } else {
-        studentId = typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
-        localStorage.setItem(`td_student_id_${slug}`, studentId);
-      }
-    }
-
-    // 4. Check if student or device is currently revoked/blocked by administrator
-    const isBlocked =
-      isSessionRevoked(studentId || undefined, deviceId, email, cleanName) ||
-      (await isUserAccessBlocked({
-        userId: studentId || undefined,
-        email,
-        name: cleanName,
-        deviceId,
-      }));
-
-    if (isBlocked) {
-      return {
-        success: false,
-        error: 'Access Denied: Your account has been logged out and restricted by the administrator. Please contact the admin to allow access.',
-      };
-    }
 
     const studentUser = {
       id: studentId,

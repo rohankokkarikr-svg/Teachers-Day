@@ -13,42 +13,20 @@
  * 8. Provides isolated, non-destructive test teardown when enabled.
  */
 
-import fs from 'fs';
+import dotenv from 'dotenv';
 import path from 'path';
 import crypto from 'crypto';
 
 /**
- * Safely loads key-value pairs from .env without overwriting existing process.env variables.
+ * Safely loads environment variables from .env using dotenv.
  */
 export function loadEnvironment(customPath) {
   const envPath = customPath || path.resolve(process.cwd(), '.env');
-  if (fs.existsSync(envPath)) {
-    try {
-      const content = fs.readFileSync(envPath, 'utf-8');
-      const lines = content.split(/\r?\n/);
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx > 0) {
-          const key = trimmed.substring(0, eqIdx).trim();
-          let val = trimmed.substring(eqIdx + 1).trim();
-          if (
-            (val.startsWith('"') && val.endsWith('"')) ||
-            (val.startsWith("'") && val.endsWith("'"))
-          ) {
-            val = val.substring(1, val.length - 1);
-          }
-          if (process.env[key] === undefined || process.env[key] === '') {
-            process.env[key] = val;
-          }
-        }
-      }
-    } catch (err) {
-      console.warn(`Could not read .env file at ${envPath}:`, err.message);
-    }
-  }
+  dotenv.config({ path: envPath, quiet: true });
 }
+
+// Load .env immediately upon import
+loadEnvironment();
 
 /**
  * Resolves Supabase URL and Key from environment (with VITE_* priority).
@@ -119,7 +97,7 @@ export function extractProjectRef(url) {
  * and rejecting dangerous service_role or secret keys.
  *
  * Supports:
- * 1. Legacy anon JWT (e.g. eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...)
+ * 1. Legacy anon JWT (e.g. 3-part base64url encoded token)
  * 2. Modern publishable keys (e.g. sb_publishable_..., pk_...)
  */
 export function validateAndInspectKey(key, expectedProjectRef) {
@@ -129,13 +107,16 @@ export function validateAndInspectKey(key, expectedProjectRef) {
 
   const cleanKey = key.trim();
 
-  // Check for placeholder values
+  // Check for placeholder values or angle brackets
   if (
+    cleanKey.startsWith('<') ||
+    cleanKey.endsWith('>') ||
     cleanKey === 'your_real_anon_or_publishable_key' ||
-    cleanKey.includes('your-anon') ||
-    cleanKey.includes('your_supabase_anon_key') ||
-    cleanKey.includes('your_anon_key') ||
-    cleanKey.includes('placeholder')
+    cleanKey === 'your_anon_or_publishable_key' ||
+    cleanKey.toLowerCase().includes('your_real') ||
+    cleanKey.toLowerCase().includes('your_anon') ||
+    cleanKey.toLowerCase().includes('your-anon') ||
+    cleanKey.toLowerCase().includes('placeholder')
   ) {
     throw new Error(
       'Supabase key is currently set to a placeholder. Please provide your real Supabase anon/publishable key.'
@@ -147,7 +128,7 @@ export function validateAndInspectKey(key, expectedProjectRef) {
     throw new Error('Supabase secret key detected. Do not use secret keys for this test.');
   }
 
-  // Accept modern publishable keys
+  // 1. Accept modern publishable keys
   if (cleanKey.startsWith('sb_publishable_') || cleanKey.startsWith('pk_')) {
     return {
       keyType: 'publishable',
@@ -155,23 +136,23 @@ export function validateAndInspectKey(key, expectedProjectRef) {
     };
   }
 
-  // Accept legacy JWT keys
-  if (cleanKey.startsWith('ey') || cleanKey.includes('.')) {
-    const parts = cleanKey.split('.');
-    if (parts.length !== 3) {
-      throw new Error('Unsupported or malformed Supabase key format (JWT expected 3 dot-separated segments).');
-    }
-
+  // 2. Detect and validate JWT format (exactly 3 dot-separated segments)
+  const jwtParts = cleanKey.split('.');
+  if (jwtParts.length === 3) {
     let payload;
     try {
-      const payloadJson = Buffer.from(parts[1], 'base64').toString('utf-8');
+      let b64 = jwtParts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) {
+        b64 += '=';
+      }
+      const payloadJson = Buffer.from(b64, 'base64').toString('utf-8');
       payload = JSON.parse(payloadJson);
     } catch {
       throw new Error('Could not parse Supabase JWT payload.');
     }
 
     if (payload.role === 'service_role') {
-      throw new Error('Supabase service_role key detected. Use the anon/publishable key.');
+      throw new Error("Service-role key detected. Replace VITE_SUPABASE_ANON_KEY with the project's anon/publishable key.");
     }
 
     if (payload.role && payload.role !== 'anon') {
@@ -197,7 +178,7 @@ export function validateAndInspectKey(key, expectedProjectRef) {
     };
   }
 
-  throw new Error('Unsupported or malformed Supabase key format. Use the Supabase anon/publishable key.');
+  throw new Error('Unsupported or malformed Supabase key format. Expected a 3-part JWT (anon role) or modern sb_publishable_* key.');
 }
 
 /**
@@ -208,14 +189,19 @@ export async function testSupabaseConnection(supabase) {
     const { error } = await supabase.from('categories').select('id').limit(1);
 
     if (error) {
-      console.log(`SUPABASE CONNECTION: FAIL (${error.message || 'API request rejected'})`);
+      console.log(`SUPABASE CONNECTION: FAIL`);
+      console.log(`  Code:    ${error.code || 'API_ERROR'}`);
+      console.log(`  Message: ${error.message || 'API request rejected'}`);
+      if (error.details) console.log(`  Details: ${error.details}`);
+      if (error.hint) console.log(`  Hint:    ${error.hint}`);
       return { connected: false, error: error.message };
     }
 
     console.log(`SUPABASE CONNECTION: PASS`);
     return { connected: true };
   } catch (err) {
-    console.log(`SUPABASE CONNECTION: FAIL (${err.message})`);
+    console.log(`SUPABASE CONNECTION: FAIL`);
+    console.log(`  Message: ${err.message}`);
     return { connected: false, error: err.message };
   }
 }

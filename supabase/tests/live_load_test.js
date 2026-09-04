@@ -17,6 +17,7 @@
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import {
+  loadEnvironment,
   resolveSupabaseConfig,
   extractProjectRef,
   validateAndInspectKey,
@@ -25,6 +26,9 @@ import {
   prepareTestStudents,
   cleanupTestRun,
 } from './live_load_fixture.js';
+
+// Load .env before reading process.env
+loadEnvironment();
 
 /**
  * Calculates P95 and P99 percentiles from latency array.
@@ -390,7 +394,32 @@ async function main() {
     process.exit(1);
   }
 
-  // 4. Production Safety Guard
+  // 4. Print Safe Diagnostic Summary (Never leaks keys or tokens)
+  console.log(`\nLIVE SUPABASE CONFIGURATION`);
+  console.log(`  URL:            ${config.url}`);
+  console.log(`  Key configured: YES`);
+  console.log(`  Key type:       ${keyInfo.keyType}`);
+  console.log(`  Project ref:    ${keyInfo.projectRef}`);
+  console.log(`  Environment:    ${testEnv}`);
+
+  console.log(`\nSUPABASE URL: PASS`);
+  console.log(`KEY FORMAT: PASS`);
+  console.log(`PROJECT REF: PASS`);
+
+  // 5. Establish Supabase Client and Test Safe Connectivity
+  console.log(`\n📡 Testing Supabase Connectivity...`);
+  const supabase = createClient(config.url, config.anonKey, {
+    auth: { persistSession: false },
+  });
+
+  const connResult = await testSupabaseConnection(supabase);
+  if (!connResult.connected) {
+    console.error(`\n❌ Aborting: Could not establish connection to Supabase project (${config.url}).`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // 6. Production Safety Guard
   const isProductionTarget =
     testEnv === 'production' ||
     projectRef === 'vtokjwfefespmkvnnpxz' ||
@@ -402,29 +431,10 @@ async function main() {
     console.log(`======================================================`);
     console.log(`WARNING: This test targets the production Supabase project (${projectRef}).`);
     console.log(`It will create temporary LOADTEST_* student/session/vote records for load verification.`);
-    console.log(`\nTo confirm and proceed against production, set:`);
+    console.log(`\nTo confirm and proceed with the 100/250/500-user load test against production, set:`);
     console.log(`  $env:LOAD_TEST_PRODUCTION_CONFIRM="true"; npm run test:load:live\n`);
-    console.log(`Status: ABORTED (Safety Confirmation Required)\n`);
-    process.exit(0);
-  }
-
-  // 5. Print Active Configuration
-  console.log(`\nLIVE SUPABASE CONFIGURATION`);
-  console.log(`  URL:         ${config.url}`);
-  console.log(`  Key type:    ${keyInfo.keyType}`);
-  console.log(`  Project ref: ${keyInfo.projectRef}`);
-  console.log(`  Environment: ${testEnv}`);
-
-  const supabase = createClient(config.url, config.anonKey, {
-    auth: { persistSession: false },
-  });
-
-  // 6. Test Connectivity
-  console.log(`\n📡 Testing Supabase Connectivity...`);
-  const connResult = await testSupabaseConnection(supabase);
-  if (!connResult.connected) {
-    console.error(`\n❌ Aborting: Could not establish connection to Supabase project (${config.url}).`);
-    process.exit(1);
+    console.log(`PRODUCTION LOAD TEST: BLOCKED UNTIL EXPLICIT CONFIRMATION\n`);
+    return;
   }
 
   // 7. Discover Fixture Configuration

@@ -612,6 +612,7 @@ export function useAdmin() {
             await supabase.from('vote_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
             await supabase.from('vote_submissions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
             await supabase.from('vote_totals').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+            await supabase.from('user_sessions').delete().neq('role', 'admin');
             await supabase.from('appreciation_messages').delete().neq('id', '00000000-0000-0000-0000-000000000000');
             await supabase.from('admin_actions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
             await supabase.from('profiles').delete().eq('role', 'student');

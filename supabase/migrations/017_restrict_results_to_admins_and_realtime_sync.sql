@@ -56,6 +56,8 @@ CREATE POLICY "Students view own submissions"
 -- Computes real-time dynamic sums directly from raw submitted ballots
 -- joined with vote_items, with category teacher filtering.
 -- --------------------------------------------------------
+DROP FUNCTION IF EXISTS public.get_category_leaderboard(UUID);
+
 CREATE OR REPLACE FUNCTION public.get_category_leaderboard(
   p_category_id UUID
 )

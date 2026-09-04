@@ -544,7 +544,7 @@ BEGIN
   -- 3. Check Revocation Status in user_sessions
   SELECT EXISTS (
     SELECT 1 FROM public.user_sessions
-    WHERE (user_id = v_student_id OR email = v_email OR (device_id = p_device_id AND p_device_id <> ''))
+    WHERE (user_id = v_student_id::TEXT OR email = v_email OR (device_id = p_device_id AND p_device_id <> ''))
       AND is_active = false
   ) INTO v_is_revoked;
 
@@ -558,11 +558,11 @@ BEGIN
 
   -- 4. Upsert Active Session Record
   INSERT INTO public.user_sessions (
-    id, user_id, full_name, email, role, device_id, user_agent, is_active, login_at, last_active_at
+    id, user_id, full_name, email, role, device_id, user_agent, is_active, login_at, last_active_at, revoked_at
   )
   VALUES (
-    'sess_' || v_student_id::text || '_' || right(COALESCE(p_device_id, 'dev'), 6),
-    v_student_id,
+    gen_random_uuid(),
+    v_student_id::TEXT,
     v_clean_name,
     v_email,
     'student',
@@ -570,9 +570,13 @@ BEGIN
     COALESCE(p_user_agent, 'Web Browser'),
     true,
     v_now,
-    v_now
+    v_now,
+    NULL
   )
-  ON CONFLICT (id) DO UPDATE SET
+  ON CONFLICT (user_id, device_id) DO UPDATE SET
+    full_name = EXCLUDED.full_name,
+    email = EXCLUDED.email,
+    user_agent = EXCLUDED.user_agent,
     last_active_at = v_now,
     is_active = true,
     revoked_at = NULL;

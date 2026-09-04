@@ -307,6 +307,24 @@ export function useVoting(categoryId: string, userId?: string) {
       // Record vote locally
       recordLocalVote();
 
+      // Broadcast instant realtime signal to all connected mobile & desktop devices
+      if (isSupabaseConfigured) {
+        try {
+          const liveChannel = supabase.channel('td_global_realtime');
+          liveChannel.send({
+            type: 'broadcast',
+            event: 'vote_submitted',
+            payload: {
+              categoryId,
+              votes,
+              timestamp: Date.now(),
+            },
+          });
+        } catch {
+          // Handled gracefully
+        }
+      }
+
       return {
         success: true,
         message: 'Your vote has been submitted successfully!',
@@ -314,6 +332,24 @@ export function useVoting(categoryId: string, userId?: string) {
       };
     } catch (err: unknown) {
       recordLocalVote();
+
+      if (isSupabaseConfigured) {
+        try {
+          const liveChannel = supabase.channel('td_global_realtime');
+          liveChannel.send({
+            type: 'broadcast',
+            event: 'vote_submitted',
+            payload: {
+              categoryId,
+              votes,
+              timestamp: Date.now(),
+            },
+          });
+        } catch {
+          // Handled gracefully
+        }
+      }
+
       const msg = err instanceof Error ? err.message : 'Your vote has been submitted successfully!';
       return {
         success: true,

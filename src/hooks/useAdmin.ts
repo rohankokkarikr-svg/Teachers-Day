@@ -230,6 +230,34 @@ export function useAdmin() {
 
   useEffect(() => {
     fetchDashboardData();
+
+    const handleUpdate = () => {
+      fetchDashboardData();
+    };
+
+    window.addEventListener('td_votes_updated', handleUpdate);
+    window.addEventListener('td_system_reset', handleUpdate);
+    window.addEventListener('td_admin_settings_updated', handleUpdate);
+    window.addEventListener('td_admin_teachers_updated', handleUpdate);
+    window.addEventListener('td_admin_categories_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
+
+    // 4-second smart polling loop
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchDashboardData();
+      }
+    }, 4000);
+
+    return () => {
+      window.removeEventListener('td_votes_updated', handleUpdate);
+      window.removeEventListener('td_system_reset', handleUpdate);
+      window.removeEventListener('td_admin_settings_updated', handleUpdate);
+      window.removeEventListener('td_admin_teachers_updated', handleUpdate);
+      window.removeEventListener('td_admin_categories_updated', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
+      clearInterval(interval);
+    };
   }, [fetchDashboardData]);
 
   // Toggle Voting Open / Closed

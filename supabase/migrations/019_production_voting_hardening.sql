@@ -795,6 +795,7 @@ $$;
 
 -- --------------------------------------------------------
 -- 8. Master System Reset Function (Wipes all ballots, totals, student profiles & sessions)
+-- (Includes WHERE clauses on all statements to satisfy PostgreSQL safeupdate)
 -- --------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.master_reset_all_data()
 RETURNS JSONB
@@ -804,31 +805,30 @@ SET search_path = public
 AS $$
 BEGIN
   -- Delete all detailed vote items
-  DELETE FROM public.vote_items;
+  DELETE FROM public.vote_items WHERE id IS NOT NULL;
 
   -- Delete all student vote submissions
-  DELETE FROM public.vote_submissions;
+  DELETE FROM public.vote_submissions WHERE id IS NOT NULL;
 
   -- Delete all aggregate vote totals
-  DELETE FROM public.vote_totals;
+  DELETE FROM public.vote_totals WHERE id IS NOT NULL;
 
   -- Delete all non-admin user sessions
-  DELETE FROM public.user_sessions
-  WHERE role <> 'admin';
+  DELETE FROM public.user_sessions WHERE role <> 'admin' OR role IS NULL;
 
   -- Delete all appreciation messages
-  DELETE FROM public.appreciation_messages;
+  DELETE FROM public.appreciation_messages WHERE id IS NOT NULL;
 
   -- Delete all admin audit logs
-  DELETE FROM public.admin_actions;
+  DELETE FROM public.admin_actions WHERE id IS NOT NULL;
 
   -- Delete all student user profiles (preserves admin accounts)
-  DELETE FROM public.profiles
-  WHERE role <> 'admin';
+  DELETE FROM public.profiles WHERE role <> 'admin' OR role IS NULL;
 
   -- Clear device_id from remaining profiles
   UPDATE public.profiles
-  SET device_id = NULL;
+  SET device_id = NULL
+  WHERE id IS NOT NULL;
 
   -- Reset voting settings to default open state
   INSERT INTO public.voting_settings (
@@ -854,4 +854,5 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.master_reset_all_data() TO authenticated, anon, service_role;
+
 

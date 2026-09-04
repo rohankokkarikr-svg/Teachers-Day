@@ -47,12 +47,37 @@ export function useVoting(categoryId: string, userId?: string) {
 
     // When Supabase is active: query database as ground truth
     try {
-      const queryPromise = supabase
-        .from('vote_submissions')
-        .select('id')
-        .eq('student_id', userId)
-        .eq('category_id', categoryId)
-        .maybeSingle();
+      const deviceId = getOrCreateDeviceId();
+      const isValidUUID = Boolean(userId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId));
+
+      let queryPromise;
+      if (isValidUUID && deviceId) {
+        queryPromise = supabase
+          .from('vote_submissions')
+          .select('id')
+          .eq('category_id', categoryId)
+          .or(`student_id.eq.${userId},device_id.eq.${deviceId}`)
+          .limit(1)
+          .maybeSingle();
+      } else if (isValidUUID) {
+        queryPromise = supabase
+          .from('vote_submissions')
+          .select('id')
+          .eq('category_id', categoryId)
+          .eq('student_id', userId)
+          .limit(1)
+          .maybeSingle();
+      } else if (deviceId) {
+        queryPromise = supabase
+          .from('vote_submissions')
+          .select('id')
+          .eq('category_id', categoryId)
+          .eq('device_id', deviceId)
+          .limit(1)
+          .maybeSingle();
+      } else {
+        queryPromise = Promise.resolve({ data: null, error: null } as any);
+      }
 
       // 3-second timeout to prevent hanging
       const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>

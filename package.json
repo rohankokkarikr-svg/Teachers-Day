@@ -16,6 +16,7 @@
     "test:browser:smoke": "node tests/browser/browser_stress_runner.js smoke",
     "test:browser:load": "node tests/browser/browser_stress_runner.js load",
     "test:browser:100": "node tests/browser/browser_stress_runner.js 100",
+    "check:state": "node supabase/tests/check_vote_state.js",
     "test:realtime": "node tests/realtime/realtime_stress_test.js"
   },
   "dependencies": {

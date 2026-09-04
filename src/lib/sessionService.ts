@@ -1093,5 +1093,206 @@ export async function reactivateMultipleUserSessions(
   return { success: true, count: userIds.length };
 }
 
+/**
+ * Permanently deletes a single student user account and wipes their session, profile, and voting data
+ */
+export async function deleteUserAccount(
+  userId: string,
+  deviceId?: string,
+  fullName?: string,
+  email?: string
+): Promise<{ success: boolean }> {
+  const nameSlug = normalizeNameKey(fullName);
+  const cleanEmail = email || (nameSlug ? `${nameSlug}@student.college` : undefined);
 
+  // 1. Remove from local storage sessions
+  const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
+  const updatedSessions = localSessions.filter(
+    (s) =>
+      s.user_id !== userId &&
+      (!cleanEmail || s.email.toLowerCase() !== cleanEmail.toLowerCase()) &&
+      (!nameSlug || normalizeNameKey(s.full_name) !== nameSlug)
+  );
+  setLocalStorage(STORAGE_SESSIONS_KEY, updatedSessions);
 
+  // 2. Remove from registered students list & audit logs
+  const registered = getLocalStorage<string[] | { name?: string; id?: string }[]>('td_registered_students', []);
+  const updatedRegistered = registered.filter((r) => {
+    if (typeof r === 'string') {
+      return (
+        r !== userId &&
+        (!fullName || r.toLowerCase() !== fullName.toLowerCase()) &&
+        (!cleanEmail || r.toLowerCase() !== cleanEmail.toLowerCase())
+      );
+    }
+    return (
+      r?.id !== userId &&
+      (!fullName || r?.name?.toLowerCase() !== fullName.toLowerCase())
+    );
+  });
+  setLocalStorage('td_registered_students', updatedRegistered);
+
+  const auditLogs = getLocalStorage<any[]>('td_device_audit_log', []);
+  const updatedLogs = auditLogs.filter(
+    (l) =>
+      l.user_id !== userId &&
+      (!cleanEmail || l.email?.toLowerCase() !== cleanEmail.toLowerCase()) &&
+      (!fullName || l.student_name?.toLowerCase() !== fullName.toLowerCase())
+  );
+  setLocalStorage('td_device_audit_log', updatedLogs);
+
+  // 3. Clean up user-specific ballot and vote storage keys
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (
+        key &&
+        (key.includes(userId) ||
+          (nameSlug && key.includes(nameSlug)) ||
+          key.startsWith(`td_submitted_categories_${userId}`) ||
+          key.startsWith(`td_draft_votes_${userId}_`) ||
+          key === `td_student_id_${nameSlug}`)
+      ) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+
+    // Clear device binding if it was bound to this student
+    const boundName = localStorage.getItem('td_bound_student_name');
+    if (boundName && fullName && boundName.toLowerCase() === fullName.toLowerCase()) {
+      localStorage.removeItem('td_bound_student_name');
+      localStorage.removeItem('td_device_bound_at');
+    }
+  } catch {
+    // Ignore storage errors
+  }
+
+  // 4. Remove from revoked sets
+  unrevokeUserSessionLocally(userId, deviceId, cleanEmail, fullName);
+
+  // 5. Dispatch real-time events to terminate student session and update UI
+  window.dispatchEvent(
+    new CustomEvent('td_user_session_revoked', {
+      detail: { userId, deviceId, name: fullName, email: cleanEmail, deleted: true },
+    })
+  );
+  window.dispatchEvent(new Event('td_user_sessions_updated'));
+  window.dispatchEvent(new Event('td_votes_updated'));
+  window.dispatchEvent(new Event('td_appreciation_updated'));
+  window.dispatchEvent(new Event('storage'));
+
+  // 6. Delete from Supabase Database
+  if (isSupabaseConfigured) {
+    try {
+      // 6a. Delete from user_sessions
+      if (userId) {
+        await supabase.from('user_sessions').delete().eq('user_id', userId);
+      }
+      if (cleanEmail) {
+        await supabase.from('user_sessions').delete().ilike('email', cleanEmail);
+      }
+
+      // 6b. Delete from vote_submissions (cascades to vote_items)
+      if (userId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+        await supabase.from('vote_submissions').delete().eq('student_id', userId);
+        await supabase.from('appreciation_messages').delete().eq('student_id', userId);
+        await supabase.from('profiles').delete().eq('id', userId).eq('role', 'student');
+      }
+
+      // 6c. Broadcast instant force logout event
+      const authChannel = supabase.channel('system_auth_channel');
+      await authChannel.send({
+        type: 'broadcast',
+        event: 'force_logout',
+        payload: {
+          userId,
+          deviceId: deviceId || null,
+          email: cleanEmail || null,
+          name: fullName || null,
+          deleted: true,
+          timestamp: Date.now(),
+        },
+      });
+    } catch {
+      // Handled locally
+    }
+  }
+
+  return { success: true };
+}
+
+/**
+ * Permanently deletes multiple student user accounts in a batch
+ */
+export async function deleteMultipleUserAccounts(
+  userIds: string[],
+  _deviceIds?: string[]
+): Promise<{ success: boolean; count: number }> {
+  for (const uId of userIds) {
+    await deleteUserAccount(uId);
+  }
+  return { success: true, count: userIds.length };
+}
+
+/**
+ * Permanently deletes all student user accounts across local storage and database
+ */
+export async function deleteAllStudentAccounts(): Promise<{ success: boolean }> {
+  // 1. Filter local sessions to keep only admins
+  const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
+  const adminSessions = localSessions.filter((s) => s.role === 'admin');
+  setLocalStorage(STORAGE_SESSIONS_KEY, adminSessions);
+
+  // 2. Clear registered students and logs
+  setLocalStorage('td_registered_students', []);
+  setLocalStorage('td_device_audit_log', []);
+  setLocalStorage('td_revoked_users', []);
+  setLocalStorage('td_revoked_devices', []);
+  setLocalStorage('td_revoked_emails', []);
+  setLocalStorage('td_revoked_names', []);
+  localStorage.removeItem('td_bound_student_name');
+  localStorage.removeItem('td_device_bound_at');
+
+  // Clear all ballot and student ID keys
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (
+      key &&
+      (key.startsWith('td_submitted_categories_') ||
+        key.startsWith('td_draft_votes_') ||
+        key.startsWith('td_student_id_'))
+    ) {
+      keysToRemove.push(key);
+    }
+  }
+  keysToRemove.forEach((k) => localStorage.removeItem(k));
+
+  // 3. Dispatch events
+  window.dispatchEvent(new CustomEvent('td_user_session_revoked', { detail: { all: true } }));
+  window.dispatchEvent(new Event('td_user_sessions_updated'));
+  window.dispatchEvent(new Event('td_votes_updated'));
+  window.dispatchEvent(new Event('td_appreciation_updated'));
+  window.dispatchEvent(new Event('storage'));
+
+  // 4. Delete from Supabase
+  if (isSupabaseConfigured) {
+    try {
+      await supabase.from('user_sessions').delete().eq('role', 'student');
+      await supabase.from('profiles').delete().eq('role', 'student');
+
+      const authChannel = supabase.channel('system_auth_channel');
+      await authChannel.send({
+        type: 'broadcast',
+        event: 'force_logout_all',
+        payload: { timestamp: Date.now() },
+      });
+    } catch {
+      // Handled locally
+    }
+  }
+
+  return { success: true };
+}

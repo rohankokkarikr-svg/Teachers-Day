@@ -17,6 +17,7 @@ import {
   Clock,
   Vote,
   Shield,
+  Trash2,
 } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -32,6 +33,9 @@ import {
   revokeAllStudentSessions,
   reactivateUserSession,
   reactivateMultipleUserSessions,
+  deleteUserAccount,
+  deleteMultipleUserAccounts,
+  deleteAllStudentAccounts,
 } from '../../lib/sessionService';
 import { toast } from '../../components/ui/Toast';
 import type { UserSessionRecord } from '../../types';
@@ -53,6 +57,12 @@ export default function AdminUsers() {
   const [showLogoutAllModal, setShowLogoutAllModal] = useState(false);
   const [isProcessingLogout, setIsProcessingLogout] = useState(false);
   const [isProcessingAllow, setIsProcessingAllow] = useState(false);
+
+  // Deletion modals state
+  const [singleDeleteTarget, setSingleDeleteTarget] = useState<UserSessionRecord | null>(null);
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
+  const [isProcessingDelete, setIsProcessingDelete] = useState(false);
 
   const loadData = useCallback(async (isSilent = false) => {
     if (!isSilent) setIsLoading(true);
@@ -252,6 +262,69 @@ export default function AdminUsers() {
     }
   };
 
+  // Delete User Actions
+  const handleConfirmSingleDelete = async () => {
+    if (!singleDeleteTarget) return;
+    setIsProcessingDelete(true);
+    try {
+      await deleteUserAccount(
+        singleDeleteTarget.user_id,
+        singleDeleteTarget.device_id,
+        singleDeleteTarget.full_name,
+        singleDeleteTarget.email
+      );
+      toast.success(
+        'User Deleted',
+        `Account for "${singleDeleteTarget.full_name}" and all associated data have been permanently removed.`
+      );
+      setSingleDeleteTarget(null);
+      loadData(true);
+    } catch {
+      toast.error('Action Failed', 'Failed to delete user account.');
+    } finally {
+      setIsProcessingDelete(false);
+    }
+  };
+
+  const handleConfirmBulkDelete = async () => {
+    const userIdsArray = Array.from(selectedUserIds);
+    if (userIdsArray.length === 0) return;
+
+    setIsProcessingDelete(true);
+    try {
+      await deleteMultipleUserAccounts(userIdsArray);
+      toast.success(
+        'Bulk Delete Complete',
+        `Successfully deleted ${userIdsArray.length} student account(s) and wiped their records.`
+      );
+      setSelectedUserIds(new Set());
+      setShowBulkDeleteModal(false);
+      loadData(true);
+    } catch {
+      toast.error('Action Failed', 'Failed to delete selected users.');
+    } finally {
+      setIsProcessingDelete(false);
+    }
+  };
+
+  const handleConfirmDeleteAll = async () => {
+    setIsProcessingDelete(true);
+    try {
+      await deleteAllStudentAccounts();
+      toast.success(
+        'All Student Accounts Deleted',
+        'All student profiles, sessions, device bindings, and ballots have been permanently wiped.'
+      );
+      setShowDeleteAllModal(false);
+      setSelectedUserIds(new Set());
+      loadData(true);
+    } catch {
+      toast.error('Action Failed', 'Failed to delete all student accounts.');
+    } finally {
+      setIsProcessingDelete(false);
+    }
+  };
+
   const handleExportCSV = () => {
     const rows = sessions.map((s) => ({
       'User ID': s.user_id,
@@ -280,7 +353,7 @@ export default function AdminUsers() {
             Users & Login History Management
           </h1>
           <p className="section-subtitle">
-            Track student and admin active sessions, monitor login activity, and enforce instant remote device logout
+            Track student and admin active sessions, monitor login activity, and delete or enforce instant remote device logout
           </p>
         </div>
 
@@ -310,6 +383,17 @@ export default function AdminUsers() {
             disabled={activeSessions === 0}
           >
             Force Logout All Users
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            icon={<Trash2 size={14} />}
+            onClick={() => setShowDeleteAllModal(true)}
+            disabled={studentCount === 0}
+            className="!bg-rose-700/85 hover:!bg-rose-600 border border-rose-500/50 text-white font-medium"
+            title="Permanently delete all registered students, sessions, and voting ballots"
+          >
+            Delete All Students
           </Button>
         </div>
       </div>
@@ -498,6 +582,16 @@ export default function AdminUsers() {
               >
                 Force Logout Selected ({selectedUserIds.size})
               </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                icon={<Trash2 size={13} />}
+                onClick={() => setShowBulkDeleteModal(true)}
+                className="text-xs !py-1 !bg-rose-700/85 hover:!bg-rose-600 border border-rose-500/50"
+                title="Permanently delete all selected student accounts"
+              >
+                Delete Selected ({selectedUserIds.size})
+              </Button>
             </div>
           </motion.div>
         )}
@@ -680,32 +774,44 @@ export default function AdminUsers() {
                           </div>
                         )}
 
-                        {/* Action: Force Logout Button or Allow Access Button */}
+                        {/* Action: Force Logout / Allow Access & Delete User Buttons */}
                         <div className="flex items-center gap-2">
                           {!isAdmin && (
-                            session.is_active ? (
+                            <>
+                              {session.is_active ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  icon={<LogOut size={13} className="text-rose-400" />}
+                                  onClick={() => setSingleLogoutTarget(session)}
+                                  className="text-xs !py-1.5 border-rose-500/30 hover:border-rose-500 hover:bg-rose-500/10 text-rose-300"
+                                  title="Instantly force logout this user and restrict their login access"
+                                >
+                                  Force Logout
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  icon={<RotateCcw size={13} className="text-emerald-400" />}
+                                  onClick={() => handleReactivateSession(session)}
+                                  className="text-xs !py-1.5 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/15 hover:border-emerald-500 font-medium"
+                                  title="Allow this user to log in and cast votes again"
+                                >
+                                  Allow Access
+                                </Button>
+                              )}
                               <Button
                                 variant="outline"
                                 size="sm"
-                                icon={<LogOut size={13} className="text-rose-400" />}
-                                onClick={() => setSingleLogoutTarget(session)}
-                                className="text-xs !py-1.5 border-rose-500/30 hover:border-rose-500 hover:bg-rose-500/10 text-rose-300"
-                                title="Instantly force logout this user and restrict their login access"
+                                icon={<Trash2 size={13} className="text-rose-400" />}
+                                onClick={() => setSingleDeleteTarget(session)}
+                                className="text-xs !py-1.5 border-rose-500/30 hover:border-rose-500 hover:bg-rose-500/20 text-rose-300"
+                                title="Permanently delete this user account and wipe their records"
                               >
-                                Force Logout
+                                Delete User
                               </Button>
-                            ) : (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                icon={<RotateCcw size={13} className="text-emerald-400" />}
-                                onClick={() => handleReactivateSession(session)}
-                                className="text-xs !py-1.5 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/15 hover:border-emerald-500 font-medium"
-                                title="Allow this user to log in and cast votes again"
-                              >
-                                Allow Access
-                              </Button>
-                            )
+                            </>
                           )}
                         </div>
                       </div>
@@ -783,6 +889,48 @@ export default function AdminUsers() {
         cancelText="Cancel"
         variant="danger"
         isLoading={isProcessingLogout}
+      />
+
+      {/* Single User Delete Modal */}
+      <ConfirmationModal
+        isOpen={!!singleDeleteTarget}
+        onClose={() => setSingleDeleteTarget(null)}
+        onConfirm={handleConfirmSingleDelete}
+        title="Delete User Account"
+        message={`Are you sure you want to permanently delete the account for "${singleDeleteTarget?.full_name}"?`}
+        warning="This action is permanent and will wipe the student's profile, active session, device registration, and all cast voting ballots."
+        confirmText="Delete User Permanently"
+        cancelText="Cancel"
+        variant="danger"
+        isLoading={isProcessingDelete}
+      />
+
+      {/* Bulk Delete Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={showBulkDeleteModal}
+        onClose={() => setShowBulkDeleteModal(false)}
+        onConfirm={handleConfirmBulkDelete}
+        title={`Delete (${selectedUserIds.size}) Selected User Accounts`}
+        message={`Are you sure you want to permanently delete ${selectedUserIds.size} student account(s)?`}
+        warning="All selected student profiles, login sessions, and cast ballots will be permanently purged from the database and local storage."
+        confirmText={`Delete (${selectedUserIds.size}) Users`}
+        cancelText="Cancel"
+        variant="danger"
+        isLoading={isProcessingDelete}
+      />
+
+      {/* Delete All Students Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={showDeleteAllModal}
+        onClose={() => setShowDeleteAllModal(false)}
+        onConfirm={handleConfirmDeleteAll}
+        title="Delete All Student Accounts"
+        message="Are you sure you want to permanently delete ALL student user accounts?"
+        warning="CRITICAL ACTION: This will permanently wipe all student accounts, active sessions, device bindings, and voting ballots across the database and local storage. Admin accounts will be preserved."
+        confirmText="Permanently Delete All Students"
+        cancelText="Cancel"
+        variant="danger"
+        isLoading={isProcessingDelete}
       />
     </div>
   );

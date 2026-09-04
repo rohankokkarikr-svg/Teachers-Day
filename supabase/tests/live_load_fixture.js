@@ -3,23 +3,86 @@
  * Live Load Test Fixture & Environment Discovery Module
  *
  * Prepares a dedicated, safe test environment:
- * 1. Supports both legacy anon JWTs and modern Supabase publishable keys.
- * 2. Strictly rejects service_role or secret keys.
- * 3. Verifies project reference match between VITE_SUPABASE_URL and key payload.
- * 4. Verifies database connectivity before running tests.
- * 5. Discovers real active categories & assigned nominees dynamically.
- * 6. Registers real test student sessions via register_or_get_student() RPC.
- * 7. Provides isolated, non-destructive test teardown when enabled.
+ * 1. Automatically and safely loads environment variables from .env if present.
+ * 2. Supports both legacy Supabase anon JWTs and modern publishable keys.
+ * 3. Strictly rejects service_role or secret keys.
+ * 4. Verifies project reference match between URL and key payload.
+ * 5. Verifies database connectivity before running tests.
+ * 6. Discovers real active categories & assigned nominees dynamically.
+ * 7. Registers real test student sessions via register_or_get_student() RPC.
+ * 8. Provides isolated, non-destructive test teardown when enabled.
  */
 
+import fs from 'fs';
+import path from 'path';
 import crypto from 'crypto';
+
+/**
+ * Safely loads key-value pairs from .env without overwriting existing process.env variables.
+ */
+export function loadEnvironment(customPath) {
+  const envPath = customPath || path.resolve(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    try {
+      const content = fs.readFileSync(envPath, 'utf-8');
+      const lines = content.split(/\r?\n/);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx > 0) {
+          const key = trimmed.substring(0, eqIdx).trim();
+          let val = trimmed.substring(eqIdx + 1).trim();
+          if (
+            (val.startsWith('"') && val.endsWith('"')) ||
+            (val.startsWith("'") && val.endsWith("'"))
+          ) {
+            val = val.substring(1, val.length - 1);
+          }
+          if (process.env[key] === undefined || process.env[key] === '') {
+            process.env[key] = val;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`Could not read .env file at ${envPath}:`, err.message);
+    }
+  }
+}
+
+/**
+ * Resolves Supabase URL and Key from environment (with VITE_* priority).
+ */
+export function resolveSupabaseConfig() {
+  loadEnvironment();
+
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const anonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+  if (!url || !url.trim()) {
+    throw new Error(
+      'Supabase URL is missing. Configure VITE_SUPABASE_URL or SUPABASE_URL.'
+    );
+  }
+
+  if (!anonKey || !anonKey.trim()) {
+    throw new Error(
+      'Supabase key is missing. Configure VITE_SUPABASE_ANON_KEY with a valid anon/publishable key.'
+    );
+  }
+
+  return {
+    url: url.trim(),
+    anonKey: anonKey.trim(),
+  };
+}
 
 /**
  * Extracts the Supabase project reference from the project URL.
  */
 export function extractProjectRef(url) {
   if (!url || typeof url !== 'string' || !url.trim()) {
-    throw new Error('Supabase URL is empty. Please set VITE_SUPABASE_URL.');
+    throw new Error('Supabase URL is missing. Configure VITE_SUPABASE_URL or SUPABASE_URL.');
   }
 
   const cleanUrl = url.trim();
@@ -27,23 +90,27 @@ export function extractProjectRef(url) {
   if (
     cleanUrl.includes('your-project') ||
     cleanUrl.includes('your_supabase_url') ||
-    cleanUrl.includes('placeholder')
+    cleanUrl.includes('placeholder') ||
+    cleanUrl.includes('https://.supabase.co')
   ) {
     throw new Error(
-      `Supabase URL is a placeholder ("${cleanUrl}"). Please provide a valid Supabase project URL (e.g. https://your-project-ref.supabase.co).`
+      `Invalid or placeholder Supabase URL ("${cleanUrl}"). Expected production URL: https://vtokjwfefespmkvnnpxz.supabase.co`
     );
   }
 
-  const match = cleanUrl.match(/https?:\/\/([a-z0-9-]+)\.supabase\.(co|in|net)/i);
-  if (match && match[1]) {
+  const match = cleanUrl.match(/^https?:\/\/([a-z0-9-]+)\.supabase\.(co|in|net)(?:\/.*)?$/i);
+  if (match && match[1] && match[1].length >= 3) {
     return match[1].toLowerCase();
   }
 
   try {
     const parsed = new URL(cleanUrl);
-    return parsed.hostname;
+    if (!parsed.hostname || parsed.hostname.startsWith('.')) {
+      throw new Error(`Malformed Supabase URL: "${cleanUrl}".`);
+    }
+    return parsed.hostname.toLowerCase();
   } catch {
-    throw new Error(`Invalid Supabase URL format: "${cleanUrl}".`);
+    throw new Error(`Malformed Supabase URL: "${cleanUrl}".`);
   }
 }
 
@@ -57,43 +124,42 @@ export function extractProjectRef(url) {
  */
 export function validateAndInspectKey(key, expectedProjectRef) {
   if (!key || typeof key !== 'string' || !key.trim()) {
-    throw new Error('Supabase key is empty. Please provide your Supabase anon/publishable key.');
+    throw new Error('Supabase key is empty. Configure VITE_SUPABASE_ANON_KEY with a valid anon or publishable key.');
   }
 
   const cleanKey = key.trim();
 
   // Check for placeholder values
   if (
+    cleanKey === 'your_real_anon_or_publishable_key' ||
     cleanKey.includes('your-anon') ||
     cleanKey.includes('your_supabase_anon_key') ||
     cleanKey.includes('your_anon_key') ||
     cleanKey.includes('placeholder')
   ) {
     throw new Error(
-      'Supabase key is a placeholder value. Please provide your real Supabase anon/publishable key from your Supabase Dashboard.'
+      'Supabase key is currently set to a placeholder. Please provide your real Supabase anon/publishable key.'
     );
   }
 
-  // Check for dangerous secret keys
+  // Reject secret keys immediately
   if (cleanKey.startsWith('sb_secret_') || cleanKey.startsWith('sk_') || cleanKey.startsWith('secret_')) {
     throw new Error('Supabase secret key detected. Do not use secret keys for this test.');
   }
 
-  // Check for modern publishable keys
+  // Accept modern publishable keys
   if (cleanKey.startsWith('sb_publishable_') || cleanKey.startsWith('pk_')) {
     return {
       keyType: 'publishable',
-      projectRef: expectedProjectRef || 'unknown',
+      projectRef: expectedProjectRef || 'vtokjwfefespmkvnnpxz',
     };
   }
 
-  // Check for JWT format
+  // Accept legacy JWT keys
   if (cleanKey.startsWith('ey') || cleanKey.includes('.')) {
     const parts = cleanKey.split('.');
     if (parts.length !== 3) {
-      throw new Error(
-        'Unsupported or malformed Supabase key format (JWT expected 3 segments). Use the Supabase anon key.'
-      );
+      throw new Error('Unsupported or malformed Supabase key format (JWT expected 3 dot-separated segments).');
     }
 
     let payload;
@@ -109,12 +175,12 @@ export function validateAndInspectKey(key, expectedProjectRef) {
     }
 
     if (payload.role && payload.role !== 'anon') {
-      throw new Error(`Supabase JWT role is "${payload.role}". Expected "anon". Use the anon key.`);
+      throw new Error(`Supabase key role is "${payload.role}". Expected "anon". Use the Supabase anon key.`);
     }
 
     const keyRef = payload.ref ? String(payload.ref).toLowerCase() : null;
 
-    if (keyRef && expectedProjectRef && expectedProjectRef.length === 20) {
+    if (keyRef && expectedProjectRef && expectedProjectRef.length >= 10) {
       if (keyRef !== expectedProjectRef.toLowerCase()) {
         throw new Error(
           `Supabase URL and anon key belong to different projects.\n` +
@@ -127,7 +193,7 @@ export function validateAndInspectKey(key, expectedProjectRef) {
 
     return {
       keyType: 'anon JWT',
-      projectRef: keyRef || expectedProjectRef || 'unknown',
+      projectRef: keyRef || expectedProjectRef || 'vtokjwfefespmkvnnpxz',
     };
   }
 

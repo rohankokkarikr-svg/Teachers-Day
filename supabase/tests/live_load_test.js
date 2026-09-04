@@ -17,6 +17,7 @@
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import {
+  resolveSupabaseConfig,
   extractProjectRef,
   validateAndInspectKey,
   testSupabaseConnection,
@@ -24,11 +25,6 @@ import {
   prepareTestStudents,
   cleanupTestRun,
 } from './live_load_fixture.js';
-
-const LOAD_TEST_ENABLED = process.env.LOAD_TEST_ENABLED === 'true';
-const LOAD_TEST_ENV = process.env.LOAD_TEST_ENV || 'staging';
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
 /**
  * Calculates P95 and P99 percentiles from latency array.
@@ -224,9 +220,9 @@ async function runValidationSuite(supabase, fixture, sampleStudent) {
   results.duplicateProtection = dupPassed;
   console.log(`2. Duplicate Ballot Blocked: ${dupPassed ? '✅ PASS' : '❌ FAIL'}`);
 
-  // 3. Test Invalid Vote Count (6 votes)
+  // 3a. Test Over-allocation (6 votes)
   const freshStudent = (await prepareTestStudents(supabase, 1, `val_${Date.now()}`))[0];
-  const limitRes = await supabase.rpc('submit_votes', {
+  const overLimitRes = await supabase.rpc('submit_votes', {
     p_category_id: fixture.categoryId,
     p_votes: [{ teacher_id: fixture.teacherA.id, vote_count: 6 }],
     p_student_id: freshStudent.studentId,
@@ -234,10 +230,26 @@ async function runValidationSuite(supabase, fixture, sampleStudent) {
     p_submission_id: crypto.randomUUID(),
   });
 
-  const limitPassed =
-    limitRes.data?.success === false && limitRes.data?.error_code === 'VOTE_LIMIT_EXCEEDED';
-  results.voteLimitProtection = limitPassed;
-  console.log(`3. Over-allocation Blocked (6 votes): ${limitPassed ? '✅ PASS' : '❌ FAIL'}`);
+  const overLimitPassed =
+    overLimitRes.data?.success === false &&
+    (overLimitRes.data?.error_code === 'VOTE_LIMIT_EXCEEDED' || overLimitRes.data?.error_code === 'INVALID_VOTE_COUNT');
+  console.log(`3a. Over-allocation Blocked (6 votes): ${overLimitPassed ? '✅ PASS' : '❌ FAIL'}`);
+
+  // 3b. Test Under-allocation (4 votes - required exact allocation is 5)
+  const underLimitRes = await supabase.rpc('submit_votes', {
+    p_category_id: fixture.categoryId,
+    p_votes: [{ teacher_id: fixture.teacherA.id, vote_count: 4 }],
+    p_student_id: freshStudent.studentId,
+    p_device_id: freshStudent.deviceId,
+    p_submission_id: crypto.randomUUID(),
+  });
+
+  const underLimitPassed =
+    underLimitRes.data?.success === false &&
+    (underLimitRes.data?.error_code === 'VOTE_LIMIT_EXCEEDED' || underLimitRes.data?.error_code === 'INVALID_VOTE_COUNT');
+  console.log(`3b. Under-allocation Blocked (4 votes): ${underLimitPassed ? '✅ PASS' : '❌ FAIL'}`);
+
+  results.voteLimitProtection = overLimitPassed && underLimitPassed;
 
   // 4. Test Invalid Category
   const invalidCatRes = await supabase.rpc('submit_votes', {
@@ -264,20 +276,68 @@ async function verifyDatabaseIntegrity(supabase) {
   console.log(`🔍 DATABASE ZERO-LOSS INTEGRITY AUDIT`);
   console.log(`======================================================`);
 
+  // 1. Verification RPC
   const { data: integrityRows, error: integErr } = await supabase.rpc('verify_voting_integrity');
 
   if (integErr) {
     console.error('❌ Failed to run verify_voting_integrity RPC:', integErr.message);
-    return { isHealthy: false, discrepanciesCount: -1 };
   }
 
   const discrepanciesCount = Array.isArray(integrityRows) ? integrityRows.length : 0;
-  const isHealthy = discrepanciesCount === 0;
+  const isRpcHealthy = !integErr && discrepanciesCount === 0;
 
-  console.log(`  Discrepancy Records: ${discrepanciesCount}`);
-  console.log(`  Audit Result:       [${isHealthy ? 'HEALTHY' : 'MISMATCH DETECTED'}]`);
+  // 2. Fetch Submission Count, Vote Item Count, Unique Voter Count, Aggregate Totals
+  let submissionCount = 0;
+  let voteItemCount = 0;
+  let sumVoteItems = 0;
+  let sumVoteTotals = 0;
 
-  return { isHealthy, discrepanciesCount };
+  try {
+    const { count: sCount } = await supabase
+      .from('vote_submissions')
+      .select('id', { count: 'exact', head: true });
+    submissionCount = sCount || 0;
+
+    const { count: viCount } = await supabase
+      .from('vote_items')
+      .select('id', { count: 'exact', head: true });
+    voteItemCount = viCount || 0;
+
+    const { data: viData } = await supabase
+      .from('vote_items')
+      .select('vote_count');
+    if (viData) {
+      sumVoteItems = viData.reduce((acc, row) => acc + (Number(row.vote_count) || 0), 0);
+    }
+
+    const { data: vtData } = await supabase
+      .from('vote_totals')
+      .select('total_votes');
+    if (vtData) {
+      sumVoteTotals = vtData.reduce((acc, row) => acc + (Number(row.total_votes) || 0), 0);
+    }
+  } catch (err) {
+    console.warn('⚠️ Direct aggregate query warning:', err.message);
+  }
+
+  const sumsMatch = sumVoteItems === sumVoteTotals;
+  const isHealthy = isRpcHealthy && sumsMatch;
+
+  console.log(`  Submissions Count:     ${submissionCount}`);
+  console.log(`  Vote Items Count:      ${voteItemCount}`);
+  console.log(`  SUM(vote_items):       ${sumVoteItems}`);
+  console.log(`  SUM(vote_totals):      ${sumVoteTotals}`);
+  console.log(`  Discrepancy Records:   ${discrepanciesCount}`);
+  console.log(`  Audit Result:          [${isHealthy ? 'HEALTHY (0 DISCREPANCIES)' : 'MISMATCH DETECTED'}]`);
+
+  return {
+    isHealthy,
+    discrepanciesCount,
+    submissionCount,
+    voteItemCount,
+    sumVoteItems,
+    sumVoteTotals,
+  };
 }
 
 /**
@@ -288,54 +348,86 @@ async function main() {
   console.log(`🚀 TEACHERS' DAY AWARDS PLATFORM: REAL SUPABASE LOAD TEST`);
   console.log(`======================================================`);
 
-  if (!LOAD_TEST_ENABLED) {
+  // 1. Resolve Environment Configuration
+  let config;
+  try {
+    config = resolveSupabaseConfig();
+  } catch (err) {
+    console.error(`\n❌ CONFIGURATION ERROR:\n${err.message}\n`);
+    console.error(`Expected:\n  VITE_SUPABASE_URL=https://vtokjwfefespmkvnnpxz.supabase.co`);
+    console.error(`  VITE_SUPABASE_ANON_KEY=your_real_anon_or_publishable_key\n`);
+    process.exit(1);
+  }
+
+  const isEnabled = process.env.LOAD_TEST_ENABLED === 'true';
+  const testEnv = process.env.LOAD_TEST_ENV || 'production';
+
+  if (!isEnabled) {
     console.log(`⚠️ LIVE LOAD TEST IS DISABLED.`);
     console.log(`To run live network load tests against your Supabase database, execute:`);
     console.log(
-      `  $env:LOAD_TEST_ENABLED="true"; $env:LOAD_TEST_ENV="staging"; $env:VITE_SUPABASE_URL="https://your-project.supabase.co"; $env:VITE_SUPABASE_ANON_KEY="your-anon-key"; npm run test:load:live`
+      `  $env:LOAD_TEST_ENABLED="true"; $env:LOAD_TEST_ENV="${testEnv}"; npm run test:load:live`
     );
-    console.log(`\nStatus: LIVE TEST NOT EXECUTED (Safety Guard Active)`);
+    console.log(`\nStatus: LIVE TEST NOT EXECUTED (Safety Guard Active)\n`);
     process.exit(0);
   }
 
-  // 1. Environment & Project URL Validation
+  // 2. Extract and Validate Project Ref
   let projectRef;
   try {
-    projectRef = extractProjectRef(SUPABASE_URL);
+    projectRef = extractProjectRef(config.url);
   } catch (err) {
     console.error(`\n❌ Configuration Error: ${err.message}\n`);
     process.exit(1);
   }
 
-  // 2. Key Format & Security Validation (rejects service_role)
+  // 3. Validate Key Format (Rejects service_role and secret keys)
   let keyInfo;
   try {
-    keyInfo = validateAndInspectKey(SUPABASE_ANON_KEY, projectRef);
+    keyInfo = validateAndInspectKey(config.anonKey, projectRef);
   } catch (err) {
     console.error(`\n❌ Key Validation Error: ${err.message}\n`);
     process.exit(1);
   }
 
-  // 3. Print Configuration
+  // 4. Production Safety Guard
+  const isProductionTarget =
+    testEnv === 'production' ||
+    projectRef === 'vtokjwfefespmkvnnpxz' ||
+    keyInfo.projectRef === 'vtokjwfefespmkvnnpxz';
+
+  if (isProductionTarget && process.env.LOAD_TEST_PRODUCTION_CONFIRM !== 'true') {
+    console.log(`\n======================================================`);
+    console.log(`⚠️ PRODUCTION SAFETY GUARD`);
+    console.log(`======================================================`);
+    console.log(`WARNING: This test targets the production Supabase project (${projectRef}).`);
+    console.log(`It will create temporary LOADTEST_* student/session/vote records for load verification.`);
+    console.log(`\nTo confirm and proceed against production, set:`);
+    console.log(`  $env:LOAD_TEST_PRODUCTION_CONFIRM="true"; npm run test:load:live\n`);
+    console.log(`Status: ABORTED (Safety Confirmation Required)\n`);
+    process.exit(0);
+  }
+
+  // 5. Print Active Configuration
   console.log(`\nLIVE SUPABASE CONFIGURATION`);
-  console.log(`  URL:         ${SUPABASE_URL}`);
+  console.log(`  URL:         ${config.url}`);
   console.log(`  Key type:    ${keyInfo.keyType}`);
   console.log(`  Project ref: ${keyInfo.projectRef}`);
-  console.log(`  Environment: ${LOAD_TEST_ENV}`);
+  console.log(`  Environment: ${testEnv}`);
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase = createClient(config.url, config.anonKey, {
     auth: { persistSession: false },
   });
 
-  // 4. Test Connectivity
+  // 6. Test Connectivity
   console.log(`\n📡 Testing Supabase Connectivity...`);
   const connResult = await testSupabaseConnection(supabase);
   if (!connResult.connected) {
-    console.error(`\n❌ Aborting: Could not establish connection to Supabase project.`);
+    console.error(`\n❌ Aborting: Could not establish connection to Supabase project (${config.url}).`);
     process.exit(1);
   }
 
-  // 5. Discover Fixture Configuration
+  // 7. Discover Fixture Configuration
   let fixture;
   try {
     fixture = await discoverCategoryAndTeachers(supabase);
@@ -397,7 +489,7 @@ async function main() {
   // Final Formatted Report Output
   // ----------------------------------------------------
   console.log(`\n======================================================`);
-  console.log(`📋 REAL SUPABASE LOAD TEST`);
+  console.log(`📋 REAL SUPABASE LOAD TEST REPORT`);
   console.log(`======================================================`);
 
   console.log(`\n100 USERS`);

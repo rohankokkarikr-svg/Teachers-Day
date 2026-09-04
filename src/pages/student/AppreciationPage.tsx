@@ -29,9 +29,20 @@ export default function AppreciationPage() {
   const { user } = useAuthContext();
   const maxLength = 280;
 
+  const areMessagesEqual = (a: AppreciationMessage[], b: AppreciationMessage[]) => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].id !== b[i].id || a[i].status !== b[i].status) return false;
+    }
+    return true;
+  };
+
   const fetchMessages = useCallback(async () => {
-    const local = getLocalStorage<AppreciationMessage[]>('td_admin_messages', []);
-    setMessages(local.filter((m) => m.status === 'approved' || m.status === 'featured'));
+    setMessages((prev) => {
+      if (prev.length > 0) return prev;
+      const local = getLocalStorage<AppreciationMessage[]>('td_admin_messages', []);
+      return local.filter((m) => m.status === 'approved' || m.status === 'featured');
+    });
 
     if (!isSupabaseConfigured) return;
 
@@ -44,7 +55,8 @@ export default function AppreciationPage() {
 
       if (error) throw error;
       if (data) {
-        setMessages(data as AppreciationMessage[]);
+        const fresh = data as AppreciationMessage[];
+        setMessages((prev) => (areMessagesEqual(prev, fresh) ? prev : fresh));
         setLocalStorage('td_admin_messages', data);
       }
     } catch {
@@ -59,29 +71,20 @@ export default function AppreciationPage() {
       fetchMessages();
     };
 
-    window.addEventListener('td_appreciation_updated', handleUpdate);
-    window.addEventListener('storage', handleUpdate);
-
-    // 10-second regular polling loop
-    const interval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        fetchMessages();
-      }
-    }, 10000);
-
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         fetchMessages();
       }
     };
 
+    window.addEventListener('td_appreciation_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('td_appreciation_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      clearInterval(interval);
     };
   }, [fetchMessages]);
 

@@ -107,6 +107,20 @@ export function useRealtime(categoryId?: string) {
           if (t.photo_url) photoMap.set(t.id, t.photo_url);
         });
 
+        const areLeaderboardsEqual = (a: LeaderboardEntry[], b: LeaderboardEntry[]) => {
+          if (a.length !== b.length) return false;
+          for (let i = 0; i < a.length; i++) {
+            if (
+              a[i].teacher_id !== b[i].teacher_id ||
+              a[i].total_votes !== b[i].total_votes ||
+              a[i].rank !== b[i].rank
+            ) {
+              return false;
+            }
+          }
+          return true;
+        };
+
         const formattedEntries: LeaderboardEntry[] = rpcRows.map((r: any, idx: number) => ({
           teacher_id: r.teacher_id,
           teacher_name: r.teacher_name,
@@ -116,7 +130,7 @@ export function useRealtime(categoryId?: string) {
           rank: Number(r.rank) || (idx + 1),
         }));
 
-        setLeaderboard(formattedEntries);
+        setLeaderboard((prev) => (areLeaderboardsEqual(prev, formattedEntries) ? prev : formattedEntries));
 
         // Cache latest totals locally
         const votesMap: Record<string, number> = {};
@@ -177,7 +191,22 @@ export function useRealtime(categoryId?: string) {
 
       entries.sort((a, b) => b.total_votes - a.total_votes || a.teacher_name.localeCompare(b.teacher_name));
       const ranked = entries.map((entry, idx) => ({ ...entry, rank: idx + 1 }));
-      setLeaderboard(ranked);
+
+      const areLeaderboardsEqual = (a: LeaderboardEntry[], b: LeaderboardEntry[]) => {
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+          if (
+            a[i].teacher_id !== b[i].teacher_id ||
+            a[i].total_votes !== b[i].total_votes ||
+            a[i].rank !== b[i].rank
+          ) {
+            return false;
+          }
+        }
+        return true;
+      };
+
+      setLeaderboard((prev) => (areLeaderboardsEqual(prev, ranked) ? prev : ranked));
     } catch {
       setLeaderboard(getCategoryFallbackLeaderboard(currentCatId));
     } finally {
@@ -230,13 +259,13 @@ export function useRealtime(categoryId?: string) {
     };
   }, [fetchLeaderboard, scheduleDebouncedFetch]);
 
-  // Fallback Polling (15s, paused when hidden to preserve battery & bandwidth)
+  // Fallback Polling (30s, paused when hidden to preserve battery & bandwidth)
   useEffect(() => {
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         fetchLeaderboard(true);
       }
-    }, 15000);
+    }, 30000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {

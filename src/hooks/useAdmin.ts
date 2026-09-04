@@ -191,7 +191,18 @@ export function useAdmin() {
       ])) as any;
 
       if (settingsRes?.data) {
-        setSettings(settingsRes.data as VotingSettings);
+        setSettings((prev) => {
+          if (
+            prev &&
+            prev.is_voting_open === settingsRes.data.is_voting_open &&
+            prev.show_live_counts === settingsRes.data.show_live_counts &&
+            prev.results_finalized === settingsRes.data.results_finalized &&
+            prev.votes_per_category === settingsRes.data.votes_per_category
+          ) {
+            return prev;
+          }
+          return settingsRes.data as VotingSettings;
+        });
         setLocalStorage('td_admin_settings', settingsRes.data);
       }
 
@@ -214,7 +225,19 @@ export function useAdmin() {
         totalVotes,
       };
 
-      setStats(liveStats);
+      setStats((prev) => {
+        if (
+          prev &&
+          prev.totalStudents === liveStats.totalStudents &&
+          prev.totalParticipants === liveStats.totalParticipants &&
+          prev.participationRate === liveStats.participationRate &&
+          prev.totalCategories === liveStats.totalCategories &&
+          prev.totalVotes === liveStats.totalVotes
+        ) {
+          return prev;
+        }
+        return liveStats;
+      });
       setLocalStorage('td_admin_stats', liveStats);
 
       if (actionsRes?.data) {
@@ -235,19 +258,19 @@ export function useAdmin() {
       fetchDashboardData(true);
     };
 
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchDashboardData(true);
+      }
+    };
+
     window.addEventListener('td_votes_updated', handleUpdate);
     window.addEventListener('td_system_reset', handleUpdate);
     window.addEventListener('td_admin_settings_updated', handleUpdate);
     window.addEventListener('td_admin_teachers_updated', handleUpdate);
     window.addEventListener('td_admin_categories_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
-
-    // Silent background database polling loop
-    const interval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        fetchDashboardData(true);
-      }
-    }, 10000);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('td_votes_updated', handleUpdate);
@@ -256,7 +279,7 @@ export function useAdmin() {
       window.removeEventListener('td_admin_teachers_updated', handleUpdate);
       window.removeEventListener('td_admin_categories_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
-      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [fetchDashboardData]);
 

@@ -39,32 +39,49 @@ export function useCategories(userId?: string) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const areCategoriesEqual = (a: CategoryWithStatus[], b: CategoryWithStatus[]) => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (
+        a[i].id !== b[i].id ||
+        a[i].name !== b[i].name ||
+        a[i].voted !== b[i].voted ||
+        a[i].teacherCount !== b[i].teacherCount ||
+        a[i].is_active !== b[i].is_active ||
+        a[i].display_order !== b[i].display_order
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+
   const fetchCategories = useCallback(async (isSilent = false) => {
-    const userVotedArray = getUserSubmittedCategories(userId);
-    const localVoted = new Set(userVotedArray);
-    const raw = getAllCategories().filter((c) => c.is_active !== false);
-    raw.sort((a, b) => a.display_order - b.display_order);
+    if (!isSilent) setIsLoading(true);
+    setError(null);
 
-    const assignments = getLocalStorage<Record<string, string[]>>(
-      'td_category_teacher_assignments',
-      INITIAL_CATEGORY_ASSIGNMENTS
-    );
-
-    const formattedLocal: CategoryWithStatus[] = raw.map((c) => ({
-      ...c,
-      voted: localVoted.has(c.id),
-      teacherCount: assignments[c.id] ? assignments[c.id].length : 0,
-    }));
-
-    setCategories(formattedLocal);
+    // If local state is empty, initialize from cache
+    setCategories((prev) => {
+      if (prev.length > 0) return prev;
+      const userVotedArray = getUserSubmittedCategories(userId);
+      const localVoted = new Set(userVotedArray);
+      const raw = getAllCategories().filter((c) => c.is_active !== false);
+      raw.sort((a, b) => a.display_order - b.display_order);
+      const assignments = getLocalStorage<Record<string, string[]>>(
+        'td_category_teacher_assignments',
+        INITIAL_CATEGORY_ASSIGNMENTS
+      );
+      return raw.map((c) => ({
+        ...c,
+        voted: localVoted.has(c.id),
+        teacherCount: assignments[c.id] ? assignments[c.id].length : 0,
+      }));
+    });
 
     if (!isSupabaseConfigured) {
       if (!isSilent) setIsLoading(false);
       return;
     }
-
-    if (!isSilent) setIsLoading(true);
-    setError(null);
 
     try {
       const catsPromise = supabase
@@ -93,6 +110,11 @@ export function useCategories(userId?: string) {
       if (catRes?.data && catRes.data.length > 0) {
         setLocalStorage('td_admin_categories', catRes.data);
 
+        const assignments = getLocalStorage<Record<string, string[]>>(
+          'td_category_teacher_assignments',
+          INITIAL_CATEGORY_ASSIGNMENTS
+        );
+
         // Group category assignments
         const teacherCounts: Record<string, number> = {};
         const freshAssignments: Record<string, string[]> = { ...assignments };
@@ -120,7 +142,6 @@ export function useCategories(userId?: string) {
         const votedCategoryIds = new Set<string>();
         if (subRes?.data) {
           subRes.data.forEach((s: any) => votedCategoryIds.add(s.category_id));
-          // Synchronize local storage cache so it accurately mirrors Supabase state
           syncUserSubmittedCategories(Array.from(votedCategoryIds), userId);
         }
 
@@ -129,7 +150,8 @@ export function useCategories(userId?: string) {
           voted: votedCategoryIds.has(cat.id),
           teacherCount: teacherCounts[cat.id] ?? 0,
         }));
-        setCategories(formatted);
+
+        setCategories((prev) => (areCategoriesEqual(prev, formatted) ? prev : formatted));
       }
     } catch {
       // Keep local categories
@@ -145,19 +167,6 @@ export function useCategories(userId?: string) {
       fetchCategories(true);
     };
 
-    window.addEventListener('td_admin_categories_updated', handleUpdate);
-    window.addEventListener('td_admin_teachers_updated', handleUpdate);
-    window.addEventListener('td_votes_updated', handleUpdate);
-    window.addEventListener('td_system_reset', handleUpdate);
-    window.addEventListener('storage', handleUpdate);
-
-    // Silent background database polling
-    const interval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        fetchCategories(true);
-      }
-    }, 10000);
-
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         fetchCategories(true);
@@ -168,6 +177,11 @@ export function useCategories(userId?: string) {
       fetchCategories(true);
     };
 
+    window.addEventListener('td_admin_categories_updated', handleUpdate);
+    window.addEventListener('td_admin_teachers_updated', handleUpdate);
+    window.addEventListener('td_votes_updated', handleUpdate);
+    window.addEventListener('td_system_reset', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('online', handleOnline);
 
@@ -179,7 +193,6 @@ export function useCategories(userId?: string) {
       window.removeEventListener('storage', handleUpdate);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('online', handleOnline);
-      clearInterval(interval);
     };
   }, [fetchCategories]);
 

@@ -21,9 +21,19 @@ export default function AdminAppreciation() {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
 
+  const areMessagesEqual = (a: AppreciationMessage[], b: AppreciationMessage[]) => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].id !== b[i].id || a[i].status !== b[i].status) return false;
+    }
+    return true;
+  };
+
   const fetchMessages = useCallback(async (isSilent = false) => {
-    const local = getLocalStorage<AppreciationMessage[]>('td_admin_messages', []);
-    setMessages(local);
+    setMessages((prev) => {
+      if (prev.length > 0) return prev;
+      return getLocalStorage<AppreciationMessage[]>('td_admin_messages', []);
+    });
 
     if (!isSupabaseConfigured) {
       if (!isSilent) setIsLoading(false);
@@ -46,7 +56,8 @@ export default function AdminAppreciation() {
 
       if (error) throw error;
       if (data) {
-        setMessages(data as AppreciationMessage[]);
+        const fresh = data as AppreciationMessage[];
+        setMessages((prev) => (areMessagesEqual(prev, fresh) ? prev : fresh));
         setLocalStorage('td_admin_messages', data);
       }
     } catch {
@@ -63,29 +74,20 @@ export default function AdminAppreciation() {
       fetchMessages(true);
     };
 
-    window.addEventListener('td_appreciation_updated', handleUpdate);
-    window.addEventListener('storage', handleUpdate);
-
-    // Silent background database polling
-    const interval = setInterval(() => {
+    const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         fetchMessages(true);
       }
-    }, 10000);
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        fetchMessages();
-      }
     };
 
+    window.addEventListener('td_appreciation_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('td_appreciation_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      clearInterval(interval);
     };
   }, [fetchMessages]);
 

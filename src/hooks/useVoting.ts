@@ -6,6 +6,7 @@ import {
   hasUserVotedInCategory,
   recordUserCategoryVote,
   removeCategoryVoteLocally,
+  getOrCreateDeviceId,
 } from '../lib/deviceId';
 import type { SubmitVotesResponse, Profile } from '../types';
 
@@ -176,15 +177,20 @@ export function useVoting(categoryId: string, userId?: string) {
     window.dispatchEvent(new Event('td_votes_updated'));
   };
 
-  // Submit votes and persist vote_submissions, vote_items, and vote_totals to Supabase
+  // Submit votes atomically via PostgreSQL RPC function
   const submitVotes = async (): Promise<SubmitVotesResponse> => {
-    const adminSettings = getLocalStorage<{ is_voting_open?: boolean } | null>('td_admin_settings', null);
-    if (adminSettings && adminSettings.is_voting_open === false) {
-      return { success: false, message: 'Voting is currently closed by the administrator.' };
+    // 1. Guard against concurrent clicks or multiple submissions
+    if (isSubmitting) {
+      return { success: false, message: 'Your vote is currently submitting. Please wait...' };
     }
 
     if (hasVoted) {
       return { success: false, message: 'You have already submitted your vote for this category.' };
+    }
+
+    const adminSettings = getLocalStorage<{ is_voting_open?: boolean } | null>('td_admin_settings', null);
+    if (adminSettings && adminSettings.is_voting_open === false) {
+      return { success: false, message: 'Voting is currently closed by the administrator.' };
     }
 
     if (totalAllocated !== VOTES_PER_CATEGORY) {
@@ -195,11 +201,24 @@ export function useVoting(categoryId: string, userId?: string) {
     }
 
     setIsSubmitting(true);
-    let submissionId = 'sub-' + Date.now();
+
+    // 2. Generate client idempotency UUID to protect against retries or duplicate network requests
+    const clientSubmissionId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
+
+    // 3. Format atomic vote allocation payload
+    const votePayload = Object.entries(votes)
+      .filter(([_, count]) => count > 0)
+      .map(([teacher_id, count]) => ({
+        teacher_id,
+        vote_count: count,
+      }));
 
     try {
       if (isSupabaseConfigured) {
-        // 1. Resolve valid student ID and ensure profile exists in DB
+        // Resolve student UUID
         let studentId = userId;
         const isValidUUID =
           studentId &&
@@ -214,101 +233,58 @@ export function useVoting(categoryId: string, userId?: string) {
           studentId = authProfile.id;
         }
 
-        if (studentId) {
-          const studentName = authProfile?.full_name || 'Student Voter';
-          const studentEmail = authProfile?.email || `student.${studentId.substring(0, 8)}@student.college`;
+        const deviceId = getOrCreateDeviceId();
 
-          try {
-            await supabase.from('profiles').upsert(
-              {
-                id: studentId,
-                email: studentEmail,
-                full_name: studentName,
-                role: 'student',
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: 'id' }
-            );
-          } catch (pErr) {
-            console.error('Error ensuring profile for vote submission:', pErr);
+        // 4. ATOMIC DATABASE RPC: Execute the single transactional vote submission in PostgreSQL
+        let rpcRes: any = null;
+        let rpcErr: any = null;
+
+        try {
+          const rpcPromise = supabase.rpc('submit_votes', {
+            p_category_id: categoryId,
+            p_votes: votePayload,
+            p_student_id: studentId || null,
+            p_device_id: deviceId || null,
+            p_submission_id: clientSubmissionId,
+          });
+
+          const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
+            setTimeout(() => reject(new Error('Submission timed out. Please check your connection.')), 8000)
+          );
+
+          const result = (await Promise.race([rpcPromise, timeoutPromise])) as any;
+          rpcRes = result.data;
+          rpcErr = result.error;
+
+          // If legacy signature is active before Migration 011 is run in SQL Editor
+          if (rpcErr && rpcErr.code === 'PGRST202') {
+            const fallbackPromise = supabase.rpc('submit_votes', {
+              p_category_id: categoryId,
+              p_votes: votePayload,
+              p_device_id: deviceId || null,
+            });
+            const fallbackResult = (await Promise.race([fallbackPromise, timeoutPromise])) as any;
+            rpcRes = fallbackResult.data;
+            rpcErr = fallbackResult.error;
           }
-
-          // 2. Insert or update vote_submissions row
-          const { data: subData, error: subErr } = await supabase
-            .from('vote_submissions')
-            .upsert(
-              {
-                student_id: studentId,
-                category_id: categoryId,
-                submitted_at: new Date().toISOString(),
-              },
-              { onConflict: 'student_id,category_id' }
-            )
-            .select('id')
-            .single();
-
-          if (!subErr && subData) {
-            submissionId = subData.id;
-
-            // 3. Clear any existing vote_items for this submission to prevent duplicates
-            await supabase.from('vote_items').delete().eq('submission_id', subData.id);
-
-            // 4. Insert vote_items records
-            const voteItemRecords = Object.entries(votes)
-              .filter(([_, count]) => count > 0)
-              .map(([teacher_id, count]) => ({
-                submission_id: subData.id,
-                teacher_id,
-                vote_count: count,
-              }));
-
-            if (voteItemRecords.length > 0) {
-              const { error: itemInsertErr } = await supabase
-                .from('vote_items')
-                .insert(voteItemRecords);
-
-              if (itemInsertErr) {
-                console.error('Error inserting vote_items:', itemInsertErr);
-              }
-            }
-          }
+        } catch (timeoutErr: any) {
+          rpcErr = timeoutErr;
         }
 
-        // 5. Update vote_totals aggregate counts in Supabase
-        for (const [teacher_id, vote_count] of Object.entries(votes)) {
-          if (vote_count > 0) {
-            try {
-              const { data: existing } = await supabase
-                .from('vote_totals')
-                .select('total_votes')
-                .eq('category_id', categoryId)
-                .eq('teacher_id', teacher_id)
-                .maybeSingle();
-
-              const currentTotal = existing?.total_votes ?? 0;
-              await supabase
-                .from('vote_totals')
-                .upsert(
-                  {
-                    category_id: categoryId,
-                    teacher_id: teacher_id,
-                    total_votes: currentTotal + vote_count,
-                    updated_at: new Date().toISOString(),
-                  },
-                  { onConflict: 'category_id,teacher_id' }
-                );
-            } catch (tErr) {
-              console.error('Error updating vote_totals:', tErr);
-            }
-          }
+        if (rpcErr) {
+          console.error('submit_votes RPC Error:', rpcErr);
+          const errMsg = rpcErr.message || 'Submission failed. Please try again.';
+          return { success: false, message: errMsg };
         }
-      }
 
-      // Record vote locally
-      recordLocalVote();
+        if (rpcRes && rpcRes.success === false) {
+          if (rpcRes.message && rpcRes.message.includes('already submitted')) {
+            recordLocalVote();
+          }
+          return { success: false, message: rpcRes.message || 'Submission was rejected by the server.' };
+        }
 
-      // Broadcast instant realtime signal to all connected mobile & desktop devices
-      if (isSupabaseConfigured) {
+        // Broadcast instant notification for live leaderboards
         try {
           const categoryChannel = supabase.channel(`live_results_stream_${categoryId}`);
           categoryChannel.send({
@@ -324,37 +300,21 @@ export function useVoting(categoryId: string, userId?: string) {
           // Handled gracefully
         }
       }
+
+      // Record successful vote locally
+      recordLocalVote();
 
       return {
         success: true,
         message: 'Your vote has been submitted successfully!',
-        submission_id: submissionId,
+        submission_id: clientSubmissionId,
       };
     } catch (err: unknown) {
-      recordLocalVote();
-
-      if (isSupabaseConfigured) {
-        try {
-          const categoryChannel = supabase.channel(`live_results_stream_${categoryId}`);
-          categoryChannel.send({
-            type: 'broadcast',
-            event: 'vote_submitted',
-            payload: {
-              categoryId,
-              votes,
-              timestamp: Date.now(),
-            },
-          });
-        } catch {
-          // Handled gracefully
-        }
-      }
-
-      const msg = err instanceof Error ? err.message : 'Your vote has been submitted successfully!';
+      console.error('Submit votes exception:', err);
+      const msg = err instanceof Error ? err.message : 'Submission failed. Please try again.';
       return {
-        success: true,
+        success: false,
         message: msg,
-        submission_id: submissionId,
       };
     } finally {
       setIsSubmitting(false);

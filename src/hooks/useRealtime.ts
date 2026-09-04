@@ -63,7 +63,10 @@ export function useRealtime(categoryId?: string) {
   const categoryIdRef = useRef(categoryId);
   categoryIdRef.current = categoryId;
 
-  // Fetch leaderboard for category
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastFetchTimeRef = useRef<number>(0);
+
+  // Optimized Leaderboard Fetcher using PostgreSQL RPC or unified fast join
   const fetchLeaderboard = useCallback(async (isSilent = false) => {
     const currentCatId = categoryIdRef.current;
     const s = getLocalStorage<VotingSettings | null>('td_admin_settings', null);
@@ -85,59 +88,70 @@ export function useRealtime(categoryId?: string) {
     setError(null);
 
     try {
-      // 1. Fetch voting settings (show_live_counts)
-      const settingsPromise = supabase
-        .from('voting_settings')
-        .select('show_live_counts')
-        .eq('id', 1)
-        .maybeSingle();
+      // 1. Attempt single high-speed database RPC: get_category_leaderboard
+      const rpcPromise = supabase.rpc('get_category_leaderboard', {
+        p_category_id: currentCatId,
+      });
 
-      // 2. Fetch category teachers and vote totals directly
-      const teachersPromise = supabase
-        .from('teachers')
-        .select('*')
-        .eq('is_active', true);
+      const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
+        setTimeout(() => reject(new Error('Leaderboard fetch timeout')), 3000)
+      );
 
-      const ctPromise = supabase
-        .from('category_teachers')
-        .select('teacher_id')
-        .eq('category_id', currentCatId);
+      const { data: rpcRows, error: rpcErr } = (await Promise.race([rpcPromise, timeoutPromise])) as any;
 
+      if (!rpcErr && Array.isArray(rpcRows) && rpcRows.length > 0) {
+        // Hydrate photo URLs with fallback if blank
+        const allCachedTeachers = getAllTeachers();
+        const photoMap = new Map<string, string>();
+        allCachedTeachers.forEach((t) => {
+          if (t.photo_url) photoMap.set(t.id, t.photo_url);
+        });
+
+        const formattedEntries: LeaderboardEntry[] = rpcRows.map((r: any, idx: number) => ({
+          teacher_id: r.teacher_id,
+          teacher_name: r.teacher_name,
+          teacher_photo: r.teacher_photo || photoMap.get(r.teacher_id) || '',
+          teacher_department: r.teacher_department || r.department || '',
+          total_votes: Number(r.total_votes) || 0,
+          rank: Number(r.rank) || (idx + 1),
+        }));
+
+        setLeaderboard(formattedEntries);
+
+        // Cache latest totals locally
+        const votesMap: Record<string, number> = {};
+        formattedEntries.forEach((e) => {
+          votesMap[e.teacher_id] = e.total_votes;
+        });
+        const localTotals = getLocalStorage<Record<string, Record<string, number>>>('td_category_vote_totals', {});
+        setLocalStorage('td_category_vote_totals', { ...localTotals, [currentCatId]: votesMap });
+        return;
+      }
+
+      // Fallback: Query vote_totals directly if RPC is not yet installed
       const totalsPromise = supabase
         .from('vote_totals')
         .select('teacher_id, total_votes')
         .eq('category_id', currentCatId);
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Leaderboard fetch timeout')), 3000)
-      );
-
-      const [settingsRes, teachersRes, ctRes, totalsRes] = (await Promise.race([
-        Promise.all([settingsPromise, teachersPromise, ctPromise, totalsPromise]),
-        timeoutPromise,
+      const [settingsRes, totalsRes] = (await Promise.all([
+        supabase.from('voting_settings').select('show_live_counts').eq('id', 1).maybeSingle(),
+        totalsPromise,
       ])) as any;
 
       if (settingsRes?.data) {
         setShowLiveCounts(settingsRes.data.show_live_counts);
       }
 
-      // Teachers list with robust fallback to local/cached teachers with photos
-      const dbTeachers: any[] = teachersRes?.data || [];
-      const allTeachers: any[] = dbTeachers.length > 0 ? dbTeachers : getAllTeachers().filter((t) => t.is_active !== false);
-
-      // Category assignments
-      const localAssignments = getLocalStorage<Record<string, string[]>>(
+      const allTeachers = getAllTeachers().filter((t) => t.is_active !== false);
+      const assignments = getLocalStorage<Record<string, string[]>>(
         'td_category_teacher_assignments',
         INITIAL_CATEGORY_ASSIGNMENTS
       );
-      let categoryTeachers: any[] = allTeachers;
-      if (ctRes?.data && ctRes.data.length > 0) {
-        const assignedIds = new Set<string>(ctRes.data.map((ct: any) => ct.teacher_id));
-        categoryTeachers = allTeachers.filter((t) => assignedIds.has(t.id));
-      } else if (localAssignments[currentCatId]) {
-        const assignedIds = new Set<string>(localAssignments[currentCatId]);
-        categoryTeachers = allTeachers.filter((t) => assignedIds.has(t.id));
-      }
+      const catAssigned = assignments[currentCatId];
+      const categoryTeachers = catAssigned !== undefined
+        ? allTeachers.filter((t) => new Set(catAssigned).has(t.id))
+        : allTeachers;
 
       const votesMap: Record<string, number> = {};
       const localTotals = getLocalStorage<Record<string, Record<string, number>>>('td_category_vote_totals', {});
@@ -147,12 +161,8 @@ export function useRealtime(categoryId?: string) {
         totalsRes.data.forEach((row: any) => {
           votesMap[row.teacher_id] = row.total_votes;
         });
-
-        // Sync Supabase totals to local cache for offline/instant hydration
-        const updatedTotals = { ...localTotals, [currentCatId]: votesMap };
-        setLocalStorage('td_category_vote_totals', updatedTotals);
+        setLocalStorage('td_category_vote_totals', { ...localTotals, [currentCatId]: votesMap });
       } else {
-        // Use local tallies if Supabase had 0 rows for this category
         Object.assign(votesMap, catLocalVotes);
       }
 
@@ -166,7 +176,6 @@ export function useRealtime(categoryId?: string) {
       }));
 
       entries.sort((a, b) => b.total_votes - a.total_votes || a.teacher_name.localeCompare(b.teacher_name));
-
       const ranked = entries.map((entry, idx) => ({ ...entry, rank: idx + 1 }));
       setLeaderboard(ranked);
     } catch {
@@ -176,12 +185,28 @@ export function useRealtime(categoryId?: string) {
     }
   }, []);
 
+  // Debounced & Throttled Refresh Scheduler to prevent Request Storms under high concurrency
+  const scheduleDebouncedFetch = useCallback(() => {
+    if (debounceTimerRef.current) return; // Fetch already scheduled in window
+
+    const now = Date.now();
+    const elapsed = now - lastFetchTimeRef.current;
+    // Debounce window of 800ms to collapse multiple simultaneous vote events
+    const wait = Math.max(800 - elapsed, 200);
+
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      lastFetchTimeRef.current = Date.now();
+      fetchLeaderboard(true);
+    }, wait);
+  }, [fetchLeaderboard]);
+
   // Initial and window event listeners
   useEffect(() => {
     fetchLeaderboard();
 
     const handleUpdate = () => {
-      fetchLeaderboard(true);
+      scheduleDebouncedFetch();
     };
 
     window.addEventListener('td_votes_updated', handleUpdate);
@@ -198,16 +223,20 @@ export function useRealtime(categoryId?: string) {
       window.removeEventListener('td_admin_categories_updated', handleUpdate);
       window.removeEventListener('td_admin_settings_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
     };
-  }, [fetchLeaderboard]);
+  }, [fetchLeaderboard, scheduleDebouncedFetch]);
 
-  // Regular Database Polling & Mobile Visibility Reconnection (every 10s)
+  // Fallback Polling (15s, paused when hidden to preserve battery & bandwidth)
   useEffect(() => {
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         fetchLeaderboard(true);
       }
-    }, 10000);
+    }, 15000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -229,9 +258,7 @@ export function useRealtime(categoryId?: string) {
     };
   }, [fetchLeaderboard]);
 
-  // Subscribe to Supabase Realtime Channels:
-  // 1. Broadcast channel 'td_global_realtime' for sub-50ms instant propagation across all mobiles
-  // 2. Postgres CDC changes on 'vote_totals', 'vote_submissions', and 'voting_settings'
+  // Realtime Channel: Throttled subscription strictly on vote_totals for this category
   useEffect(() => {
     if (!categoryId || !isSupabaseConfigured) return;
 
@@ -241,7 +268,7 @@ export function useRealtime(categoryId?: string) {
           broadcast: { self: false },
         },
       })
-      // A. Listen to instant broadcast votes from any student phone
+      // 1. Instant optimistic broadcast updates from student devices
       .on('broadcast', { event: 'vote_submitted' }, (payload) => {
         const data = payload.payload as {
           categoryId: string;
@@ -249,7 +276,6 @@ export function useRealtime(categoryId?: string) {
         };
 
         if (data?.categoryId === categoryId) {
-          // Optimistically update counts in-memory for instant visual responsiveness
           if (data.votes) {
             setLeaderboard((prev) => {
               const updated = prev.map((entry) => {
@@ -263,55 +289,23 @@ export function useRealtime(categoryId?: string) {
                 .map((item, idx) => ({ ...item, rank: idx + 1 }));
             });
           }
-          // Fetch exact authoritative database records
-          fetchLeaderboard(true);
+          scheduleDebouncedFetch();
         }
       })
-      // B. Listen to direct Postgres WAL database changes on `vote_totals`
+      // 2. Debounced PostgreSQL Realtime updates on vote_totals (filtered to this category)
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
           table: 'vote_totals',
-        },
-        (payload) => {
-          const updatedRow = payload.new as { category_id?: string; teacher_id?: string; total_votes?: number };
-          if (updatedRow && updatedRow.category_id === categoryId && updatedRow.teacher_id) {
-            setLeaderboard((prev) => {
-              const updatedList = prev.map((entry) => {
-                if (entry.teacher_id === updatedRow.teacher_id) {
-                  return {
-                    ...entry,
-                    previous_rank: entry.rank,
-                    total_votes: updatedRow.total_votes ?? entry.total_votes,
-                  };
-                }
-                return entry;
-              });
-
-              return updatedList
-                .sort((a, b) => b.total_votes - a.total_votes || a.teacher_name.localeCompare(b.teacher_name))
-                .map((item, idx) => ({ ...item, rank: idx + 1 }));
-            });
-          } else {
-            fetchLeaderboard(true);
-          }
-        }
-      )
-      // C. Listen to new vote submissions in real-time
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'vote_submissions',
+          filter: `category_id=eq.${categoryId}`,
         },
         () => {
-          fetchLeaderboard(true);
+          scheduleDebouncedFetch();
         }
       )
-      // D. Listen to admin voting settings updates
+      // 3. Admin settings updates
       .on(
         'postgres_changes',
         {
@@ -333,7 +327,7 @@ export function useRealtime(categoryId?: string) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [categoryId, fetchLeaderboard]);
+  }, [categoryId, scheduleDebouncedFetch]);
 
   return {
     leaderboard,

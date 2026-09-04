@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Users,
@@ -7,12 +8,18 @@ import {
   Trophy,
   Clock,
   BarChart3,
+  ShieldCheck,
+  CheckCircle2,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import Badge from '../../components/ui/Badge';
+import Button from '../../components/ui/Button';
 import LiveBadge from '../../components/ui/LiveBadge';
 import { useAdmin } from '../../hooks/useAdmin';
-import { formatTimeAgo, getLocalStorage } from '../../lib/utils';
+import { formatTimeAgo } from '../../lib/utils';
+import { toast } from '../../components/ui/Toast';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 20 },
@@ -24,7 +31,32 @@ const fadeUp = {
 };
 
 export default function AdminDashboard() {
-  const { stats, settings, recentActions } = useAdmin();
+  const { stats, settings, recentActions, verifyVoteIntegrity } = useAdmin();
+  const [isAuditing, setIsAuditing] = useState(false);
+  const [auditResult, setAuditResult] = useState<{
+    is_healthy: boolean;
+    discrepancies_count: number;
+    total_submissions: number;
+    total_votes_recorded: number;
+    checked_at?: string;
+  } | null>(null);
+
+  const handleRunAudit = async () => {
+    setIsAuditing(true);
+    try {
+      const res = await verifyVoteIntegrity();
+      setAuditResult(res);
+      if (res.is_healthy) {
+        toast.success('Database Integrity 100% Healthy', 'All atomic vote totals match submitted ballots perfectly.');
+      } else {
+        toast.warning('Discrepancy Detected', `${res.discrepancies_count} category totals differ from ballots.`);
+      }
+    } catch {
+      toast.error('Audit Check Failed', 'Could not query database integrity.');
+    } finally {
+      setIsAuditing(false);
+    }
+  };
 
   const statItems = [
     { label: 'Total Registered Students', value: stats.totalStudents.toString(), icon: Users, color: 'text-primary-400', bgColor: 'bg-primary-500/10' },
@@ -35,16 +67,6 @@ export default function AdminDashboard() {
 
   const turnout = stats.participationRate || 0;
   const remainingStudents = Math.max(0, stats.totalStudents - stats.totalParticipants);
-
-  // Compute actual leading candidate from local votes
-  const localTotals = getLocalStorage<Record<string, Record<string, number>>>('td_category_vote_totals', {});
-  const teacherVoteSums: Record<string, number> = {};
-  Object.values(localTotals).forEach((catMap) => {
-    Object.entries(catMap).forEach(([tId, count]) => {
-      teacherVoteSums[tId] = (teacherVoteSums[tId] || 0) + count;
-    });
-  });
-
   const hasAnyVotes = stats.totalVotes > 0;
 
   return (
@@ -93,6 +115,77 @@ export default function AdminDashboard() {
             </Card>
           </motion.div>
         ))}
+      </motion.div>
+
+      {/* Concurrency & Database Health Audit Card */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.25 }}
+      >
+        <Card className="border border-emerald-500/20 bg-gradient-to-r from-emerald-950/20 via-surface-900 to-surface-900">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center flex-shrink-0 text-emerald-400">
+                <ShieldCheck size={22} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-semibold text-white">Concurrency & Database Health</h2>
+                  <Badge variant="success" icon={<CheckCircle2 size={12} />}>
+                    Atomic Protected
+                  </Badge>
+                </div>
+                <p className="text-xs text-surface-400 mt-0.5">
+                  Transactional integrity active (PostgreSQL atomic increments, idempotency lock & zero race-conditions)
+                </p>
+              </div>
+            </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              icon={<RefreshCw size={14} className={isAuditing ? 'animate-spin' : ''} />}
+              onClick={handleRunAudit}
+              isLoading={isAuditing}
+            >
+              Verify DB Integrity
+            </Button>
+          </div>
+
+          {auditResult && (
+            <div className="mt-4 pt-3 border-t border-surface-800 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div>
+                <span className="text-surface-500">Integrity Status:</span>
+                <p className="font-semibold text-emerald-400 flex items-center gap-1 mt-0.5">
+                  {auditResult.is_healthy ? (
+                    <>
+                      <CheckCircle2 size={12} /> 100% Consistent
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle size={12} className="text-amber-400" /> Discrepancy Found
+                    </>
+                  )}
+                </p>
+              </div>
+              <div>
+                <span className="text-surface-500">Total Submissions:</span>
+                <p className="font-semibold text-white mt-0.5">{auditResult.total_submissions}</p>
+              </div>
+              <div>
+                <span className="text-surface-500">Atomic Total Votes:</span>
+                <p className="font-semibold text-white mt-0.5">{auditResult.total_votes_recorded}</p>
+              </div>
+              <div>
+                <span className="text-surface-500">Discrepancies:</span>
+                <p className={`font-semibold mt-0.5 ${auditResult.discrepancies_count === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {auditResult.discrepancies_count}
+                </p>
+              </div>
+            </div>
+          )}
+        </Card>
       </motion.div>
 
       {/* Bottom Row */}

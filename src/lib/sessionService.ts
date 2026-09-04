@@ -97,7 +97,7 @@ export async function recordUserLoginSession(profile: {
   // 2. Upsert session record in Supabase
   if (isSupabaseConfigured) {
     try {
-      await supabase.from('user_sessions').upsert(
+      const { error: upsertErr } = await supabase.from('user_sessions').upsert(
         {
           user_id: profile.id,
           full_name: profile.full_name,
@@ -112,6 +112,60 @@ export async function recordUserLoginSession(profile: {
         },
         { onConflict: 'user_id,device_id' }
       );
+
+      if (upsertErr) {
+        // Fallback: check if row exists by user_id
+        const { data: existingRows } = await supabase
+          .from('user_sessions')
+          .select('id')
+          .eq('user_id', profile.id)
+          .limit(1);
+
+        if (existingRows && existingRows.length > 0) {
+          await supabase
+            .from('user_sessions')
+            .update({
+              full_name: profile.full_name,
+              email: profile.email,
+              device_id: deviceId,
+              user_agent: userAgent,
+              is_active: true,
+              last_active_at: now,
+              revoked_at: null,
+            })
+            .eq('user_id', profile.id);
+        } else {
+          await supabase.from('user_sessions').insert({
+            user_id: profile.id,
+            full_name: profile.full_name,
+            email: profile.email,
+            role: profile.role || 'student',
+            device_id: deviceId,
+            user_agent: userAgent,
+            is_active: true,
+            login_at: now,
+            last_active_at: now,
+          });
+        }
+      }
+
+      // Broadcast login event to admin channels
+      try {
+        const authChannel = supabase.channel('system_auth_channel');
+        authChannel.send({
+          type: 'broadcast',
+          event: 'user_logged_in',
+          payload: {
+            user_id: profile.id,
+            full_name: profile.full_name,
+            role: profile.role || 'student',
+            device_id: deviceId,
+            timestamp: Date.now(),
+          },
+        });
+      } catch {
+        // Ignore broadcast error
+      }
     } catch {
       // Handled locally
     }
@@ -221,22 +275,55 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
     }
   });
 
-  // 2. If Supabase is configured, fetch remote ground truth
+  // 2. If Supabase is configured, fetch remote ground truth from BOTH profiles and user_sessions
   if (isSupabaseConfigured) {
     try {
-      const queryPromise = supabase
+      const sessionsPromise = supabase
         .from('user_sessions')
         .select('*')
         .order('last_active_at', { ascending: false });
 
+      const profilesPromise = supabase
+        .from('profiles')
+        .select('*')
+        .order('created_at', { ascending: false });
+
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Sessions fetch timeout')), 2500)
+        setTimeout(() => reject(new Error('Sessions fetch timeout')), 3000)
       );
 
-      const { data, error } = (await Promise.race([queryPromise, timeoutPromise])) as any;
+      const [sessionsRes, profilesRes] = (await Promise.race([
+        Promise.all([sessionsPromise, profilesPromise]),
+        timeoutPromise,
+      ])) as any;
 
-      if (!error && data && Array.isArray(data)) {
-        data.forEach((remoteS: any) => {
+      // 2a. Ingest all registered profiles from Supabase
+      if (profilesRes?.data && Array.isArray(profilesRes.data)) {
+        profilesRes.data.forEach((p: any) => {
+          if (!sessionMap.has(p.id)) {
+            const votes = getUserSubmittedCategories(p.id);
+            const isRevoked = revokedUserSet.has(p.id);
+            sessionMap.set(p.id, {
+              id: `sess_${p.id}`,
+              user_id: p.id,
+              full_name: p.full_name || p.email,
+              email: p.email,
+              role: p.role || 'student',
+              device_id: p.device_id || getOrCreateDeviceId(),
+              user_agent: 'Web Client',
+              is_active: !isRevoked,
+              login_at: p.created_at || new Date().toISOString(),
+              last_active_at: p.updated_at || p.created_at || new Date().toISOString(),
+              voted_categories_count: votes.length,
+              total_categories_count: 8,
+            });
+          }
+        });
+      }
+
+      // 2b. Ingest detailed user sessions
+      if (sessionsRes?.data && Array.isArray(sessionsRes.data)) {
+        sessionsRes.data.forEach((remoteS: any) => {
           const votes = getUserSubmittedCategories(remoteS.user_id);
           const isRevoked = revokedUserSet.has(remoteS.user_id) || remoteS.is_active === false;
           sessionMap.set(remoteS.user_id, {
@@ -246,7 +333,7 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
             email: remoteS.email,
             role: remoteS.role || 'student',
             device_id: remoteS.device_id,
-            user_agent: remoteS.user_agent || 'Unknown Device',
+            user_agent: remoteS.user_agent || 'Web Client',
             ip_address: remoteS.ip_address,
             is_active: isRevoked ? false : (remoteS.is_active ?? true),
             login_at: remoteS.login_at || remoteS.created_at || new Date().toISOString(),

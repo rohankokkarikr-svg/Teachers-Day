@@ -174,6 +174,48 @@ export function recordUserCategoryVote(categoryId: string, userId?: string): voi
 }
 
 /**
+ * Removes a specific category from local user & device voted records
+ */
+export function removeCategoryVoteLocally(categoryId: string, userId?: string): void {
+  try {
+    const key = getUserSubmittedCategoriesKey(userId);
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const list: string[] = JSON.parse(raw);
+      const filtered = list.filter((id) => id !== categoryId);
+      localStorage.setItem(key, JSON.stringify(filtered));
+    }
+
+    const deviceId = getOrCreateDeviceId();
+    const deviceKey = `td_device_voted_categories_${deviceId}`;
+    const rawDevice = localStorage.getItem(deviceKey);
+    if (rawDevice) {
+      const list: string[] = JSON.parse(rawDevice);
+      const filtered = list.filter((id) => id !== categoryId);
+      localStorage.setItem(deviceKey, JSON.stringify(filtered));
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+/**
+ * Synchronizes the local user and device voted category list with ground truth (e.g. Supabase)
+ */
+export function syncUserSubmittedCategories(activeCategoryIds: string[], userId?: string): void {
+  try {
+    const key = getUserSubmittedCategoriesKey(userId);
+    localStorage.setItem(key, JSON.stringify(activeCategoryIds));
+
+    const deviceId = getOrCreateDeviceId();
+    const deviceKey = `td_device_voted_categories_${deviceId}`;
+    localStorage.setItem(deviceKey, JSON.stringify(activeCategoryIds));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+/**
  * Checks whether a specific user or this device has already submitted a vote for a given category
  */
 export function hasUserVotedInCategory(categoryId: string, userId?: string): boolean {
@@ -183,13 +225,32 @@ export function hasUserVotedInCategory(categoryId: string, userId?: string): boo
 }
 
 /**
- * Clears all local device bindings, cookies, voter histories and ballots
+ * Clears all local device bindings, cookies, voter histories, draft votes, and ballots
  */
 export function clearDeviceBindingsAndVotes(): void {
   try {
     localStorage.removeItem(DEVICE_BOUND_STUDENT_KEY);
     localStorage.removeItem(DEVICE_ID_KEY);
     localStorage.removeItem('td_device_audit_log');
+    localStorage.removeItem('td_registered_students');
+    localStorage.removeItem('td_category_vote_totals');
+
+    // Remove all user ballot keys, draft keys, student id keys, device vote keys
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (
+        key &&
+        (key.startsWith('td_submitted_categories') ||
+          key.startsWith('td_device_voted_categories') ||
+          key.startsWith('td_draft_votes') ||
+          key.startsWith('td_votes_') ||
+          key.startsWith('td_student_id_'))
+      ) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
 
     // Clear all cookies
     document.cookie = `${DEVICE_BOUND_STUDENT_KEY}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=Lax`;

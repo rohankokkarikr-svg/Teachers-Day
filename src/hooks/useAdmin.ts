@@ -551,31 +551,30 @@ export function useAdmin() {
       // 1. Wipe database tables if Supabase configured
       if (isSupabaseConfigured) {
         try {
-          // Delete all detailed vote items
-          await supabase.from('vote_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          // Delete all vote submissions
-          await supabase.from('vote_submissions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          // Delete all materialized vote totals
-          await supabase.from('vote_totals').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          // Delete all appreciation messages
-          await supabase.from('appreciation_messages').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          // Delete all admin audit actions
-          await supabase.from('admin_actions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-          // Delete student profiles so registered student accounts are completely reset
-          await supabase.from('profiles').delete().eq('role', 'student');
-          // Clear device_id from any remaining profiles
-          await supabase.from('profiles').update({ device_id: null }).neq('id', '00000000-0000-0000-0000-000000000000');
-          // Reset voting settings to default
-          await supabase.from('voting_settings').upsert({
-            id: 1,
-            is_voting_open: true,
-            show_live_counts: true,
-            results_finalized: false,
-            scheduled_start: null,
-            scheduled_end: null,
-            votes_per_category: 5,
-            updated_at: new Date().toISOString(),
-          });
+          // Attempt atomic master reset RPC first (runs with SECURITY DEFINER to bypass RLS)
+          const { data: rpcData, error: rpcErr } = await supabase.rpc('master_reset_all_data');
+
+          if (rpcErr || (rpcData && rpcData.success === false)) {
+            console.warn('RPC master_reset_all_data fallback needed:', rpcErr || rpcData?.error);
+            // Fallback direct table deletes
+            await supabase.from('vote_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+            await supabase.from('vote_submissions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+            await supabase.from('vote_totals').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+            await supabase.from('appreciation_messages').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+            await supabase.from('admin_actions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+            await supabase.from('profiles').delete().eq('role', 'student');
+            await supabase.from('profiles').update({ device_id: null }).neq('id', '00000000-0000-0000-0000-000000000000');
+            await supabase.from('voting_settings').upsert({
+              id: 1,
+              is_voting_open: true,
+              show_live_counts: true,
+              results_finalized: false,
+              scheduled_start: null,
+              scheduled_end: null,
+              votes_per_category: 5,
+              updated_at: new Date().toISOString(),
+            });
+          }
         } catch (dbErr) {
           console.error('Database reset error:', dbErr);
         }
@@ -648,6 +647,7 @@ export function useAdmin() {
       setRecentActions([]);
 
       // 3. Dispatch global sync events
+      window.dispatchEvent(new Event('td_system_reset'));
       window.dispatchEvent(new Event('td_votes_updated'));
       window.dispatchEvent(new Event('td_appreciation_updated'));
       window.dispatchEvent(new Event('td_admin_settings_updated'));

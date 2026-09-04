@@ -35,10 +35,12 @@ export default function VotePage() {
     };
 
     window.addEventListener('td_admin_settings_updated', checkSettings);
+    window.addEventListener('td_system_reset', checkSettings);
     window.addEventListener('storage', checkSettings);
 
     return () => {
       window.removeEventListener('td_admin_settings_updated', checkSettings);
+      window.removeEventListener('td_system_reset', checkSettings);
       window.removeEventListener('storage', checkSettings);
     };
   }, []);

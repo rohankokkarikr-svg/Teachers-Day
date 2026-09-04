@@ -157,6 +157,7 @@ export function useRealtime(categoryId?: string) {
     };
 
     window.addEventListener('td_votes_updated', handleUpdate);
+    window.addEventListener('td_system_reset', handleUpdate);
     window.addEventListener('td_admin_teachers_updated', handleUpdate);
     window.addEventListener('td_admin_categories_updated', handleUpdate);
     window.addEventListener('td_admin_settings_updated', handleUpdate);
@@ -164,6 +165,7 @@ export function useRealtime(categoryId?: string) {
 
     return () => {
       window.removeEventListener('td_votes_updated', handleUpdate);
+      window.removeEventListener('td_system_reset', handleUpdate);
       window.removeEventListener('td_admin_teachers_updated', handleUpdate);
       window.removeEventListener('td_admin_categories_updated', handleUpdate);
       window.removeEventListener('td_admin_settings_updated', handleUpdate);

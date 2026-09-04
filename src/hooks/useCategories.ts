@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
-import { getUserSubmittedCategories } from '../lib/deviceId';
+import { getUserSubmittedCategories, syncUserSubmittedCategories } from '../lib/deviceId';
 import { getLocalStorage, setLocalStorage } from '../lib/utils';
 import { INITIAL_CATEGORIES_DATA, INITIAL_CATEGORY_ASSIGNMENTS } from '../data/initialCategories';
 import type { Category } from '../types';
@@ -116,9 +116,12 @@ export function useCategories(userId?: string) {
 
         setLocalStorage('td_category_teacher_assignments', freshAssignments);
 
-        const votedCategoryIds = new Set<string>(localVoted);
-        if (subRes.data) {
+        // Ground truth voted category IDs from Supabase
+        const votedCategoryIds = new Set<string>();
+        if (subRes?.data) {
           subRes.data.forEach((s: any) => votedCategoryIds.add(s.category_id));
+          // Synchronize local storage cache so it accurately mirrors Supabase state
+          syncUserSubmittedCategories(Array.from(votedCategoryIds), userId);
         }
 
         const formatted: CategoryWithStatus[] = catRes.data.map((cat: any) => ({
@@ -145,12 +148,14 @@ export function useCategories(userId?: string) {
     window.addEventListener('td_admin_categories_updated', handleUpdate);
     window.addEventListener('td_admin_teachers_updated', handleUpdate);
     window.addEventListener('td_votes_updated', handleUpdate);
+    window.addEventListener('td_system_reset', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
     return () => {
       window.removeEventListener('td_admin_categories_updated', handleUpdate);
       window.removeEventListener('td_admin_teachers_updated', handleUpdate);
       window.removeEventListener('td_votes_updated', handleUpdate);
+      window.removeEventListener('td_system_reset', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
     };
   }, [fetchCategories]);
@@ -162,3 +167,4 @@ export function useCategories(userId?: string) {
     refetch: fetchCategories,
   };
 }
+

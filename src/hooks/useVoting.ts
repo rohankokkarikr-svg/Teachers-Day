@@ -5,6 +5,7 @@ import { getLocalStorage, setLocalStorage, removeLocalStorage } from '../lib/uti
 import {
   hasUserVotedInCategory,
   recordUserCategoryVote,
+  removeCategoryVoteLocally,
 } from '../lib/deviceId';
 import type { SubmitVotesResponse, Profile } from '../types';
 
@@ -17,83 +18,93 @@ export function useVoting(categoryId: string, userId?: string) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Check if student has already voted for this category
-  useEffect(() => {
-    let isMounted = true;
+  const checkVotedStatus = useCallback(async () => {
+    setIsLoading(true);
+    if (!categoryId) {
+      setIsLoading(false);
+      return;
+    }
 
-    const checkVotedStatus = async () => {
-      setIsLoading(true);
-      if (!categoryId) {
-        if (isMounted) setIsLoading(false);
-        return;
+    // Check user-isolated voting history first
+    const localSubmitted = hasUserVotedInCategory(categoryId, userId);
+
+    if (!isSupabaseConfigured || !userId || userId.startsWith('demo-') || userId.startsWith('admin-demo')) {
+      setHasVoted(localSubmitted);
+      if (!localSubmitted) {
+        const draft = getLocalStorage<Record<string, number>>(storageKey, {});
+        setVotes(draft);
+      } else {
+        setVotes({});
       }
+      setIsLoading(false);
+      return;
+    }
 
-      // Check user-isolated voting history first
-      const localSubmitted = hasUserVotedInCategory(categoryId, userId);
+    // When Supabase is active: query database as ground truth
+    try {
+      const queryPromise = supabase
+        .from('vote_submissions')
+        .select('id')
+        .eq('student_id', userId)
+        .eq('category_id', categoryId)
+        .maybeSingle();
 
-      if (!isSupabaseConfigured || !userId || userId.startsWith('demo-') || userId.startsWith('admin-demo')) {
-        if (isMounted) {
-          setHasVoted(localSubmitted);
-          if (!localSubmitted) {
-            const draft = getLocalStorage<Record<string, number>>(storageKey, {});
-            setVotes(draft);
-          } else {
-            setVotes({});
-          }
-          setIsLoading(false);
-        }
-        return;
-      }
+      // 2-second timeout race to prevent hanging
+      const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout')), 2000)
+      );
 
-      if (localSubmitted) {
-        if (isMounted) {
-          setHasVoted(true);
-          setIsLoading(false);
-        }
-        return;
-      }
+      const { data, error } = (await Promise.race([queryPromise, timeoutPromise])) as any;
 
-      try {
-        const queryPromise = supabase
-          .from('vote_submissions')
-          .select('id')
-          .eq('student_id', userId)
-          .eq('category_id', categoryId)
-          .maybeSingle();
-
-        // 2-second timeout race to prevent hanging
-        const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
-          setTimeout(() => reject(new Error('Timeout')), 2000)
-        );
-
-        const { data, error } = (await Promise.race([queryPromise, timeoutPromise])) as any;
-
-        if (isMounted) {
-          if (!error && data) {
-            setHasVoted(true);
-            setVotes({});
-          } else {
-            setHasVoted(false);
-            const draft = getLocalStorage<Record<string, number>>(storageKey, {});
-            setVotes(draft);
-          }
-        }
-      } catch {
-        if (isMounted) {
-          setHasVoted(false);
+      if (!error && data) {
+        // Confirmed voted in Supabase
+        setHasVoted(true);
+        setVotes({});
+      } else if (!error && !data) {
+        // Confirmed NOT voted in Supabase (e.g. fresh state or after master reset)
+        setHasVoted(false);
+        removeCategoryVoteLocally(categoryId, userId);
+        const draft = getLocalStorage<Record<string, number>>(storageKey, {});
+        setVotes(draft);
+      } else {
+        // Fallback to local
+        setHasVoted(localSubmitted);
+        if (!localSubmitted) {
           const draft = getLocalStorage<Record<string, number>>(storageKey, {});
           setVotes(draft);
         }
-      } finally {
-        if (isMounted) setIsLoading(false);
       }
-    };
+    } catch {
+      // In case of timeout or connection issue, fallback to local state
+      setHasVoted(localSubmitted);
+      if (!localSubmitted) {
+        const draft = getLocalStorage<Record<string, number>>(storageKey, {});
+        setVotes(draft);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [categoryId, userId, storageKey]);
 
+  useEffect(() => {
     checkVotedStatus();
 
-    return () => {
-      isMounted = false;
+    const handleUpdate = () => {
+      checkVotedStatus();
     };
-  }, [categoryId, userId, storageKey]);
+
+    window.addEventListener('td_votes_updated', handleUpdate);
+    window.addEventListener('td_system_reset', handleUpdate);
+    window.addEventListener('td_admin_settings_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
+
+    return () => {
+      window.removeEventListener('td_votes_updated', handleUpdate);
+      window.removeEventListener('td_system_reset', handleUpdate);
+      window.removeEventListener('td_admin_settings_updated', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
+    };
+  }, [checkVotedStatus]);
 
   // Total votes currently allocated
   const totalAllocated = Object.values(votes).reduce((sum, count) => sum + count, 0);
@@ -172,7 +183,7 @@ export function useVoting(categoryId: string, userId?: string) {
       return { success: false, message: 'Voting is currently closed by the administrator.' };
     }
 
-    if (hasVoted || hasUserVotedInCategory(categoryId, userId)) {
+    if (hasVoted) {
       return { success: false, message: 'You have already submitted your vote for this category.' };
     }
 

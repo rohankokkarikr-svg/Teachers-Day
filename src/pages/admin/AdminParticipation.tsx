@@ -176,11 +176,13 @@ export default function AdminParticipation() {
     };
 
     window.addEventListener('td_votes_updated', handleUpdate);
+    window.addEventListener('td_system_reset', handleUpdate);
     window.addEventListener('td_admin_categories_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
     return () => {
       window.removeEventListener('td_votes_updated', handleUpdate);
+      window.removeEventListener('td_system_reset', handleUpdate);
       window.removeEventListener('td_admin_categories_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
     };

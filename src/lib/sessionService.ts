@@ -11,9 +11,12 @@ import type { UserSessionRecord, UserRole } from '../types';
 const STORAGE_SESSIONS_KEY = 'td_user_sessions';
 const STORAGE_REVOKED_USERS_KEY = 'td_revoked_users';
 const STORAGE_REVOKED_DEVICES_KEY = 'td_revoked_devices';
+const STORAGE_REVOKED_EMAILS_KEY = 'td_revoked_emails';
+const STORAGE_REVOKED_NAMES_KEY = 'td_revoked_names';
+const STORAGE_GLOBAL_REVOKED_KEY = 'td_global_students_revoked';
 
 interface RevokedRecord {
-  id: string; // userId or deviceId
+  id: string; // identifier
   revokedAt: string;
 }
 
@@ -42,6 +45,116 @@ export function getClientDeviceDetails(): string {
 }
 
 /**
+ * Normalizes a full name into a consistent lookup key
+ */
+export function normalizeNameKey(name: string): string {
+  return (name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Checks if a user, device, email, or name is currently blocked/revoked from logging in
+ */
+export async function isUserAccessBlocked(params: {
+  userId?: string;
+  email?: string;
+  name?: string;
+  deviceId?: string;
+}): Promise<boolean> {
+  const { userId, email, name, deviceId } = params;
+
+  // 1. Check global student revocation flag
+  const isGlobalRevoked = getLocalStorage<boolean>(STORAGE_GLOBAL_REVOKED_KEY, false);
+  if (isGlobalRevoked) {
+    return true;
+  }
+
+  // 2. Check local storage revoked lists
+  const revokedUsers = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_USERS_KEY, []);
+  const revokedDevices = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_DEVICES_KEY, []);
+  const revokedEmails = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_EMAILS_KEY, []);
+  const revokedNames = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_NAMES_KEY, []);
+
+  if (userId && revokedUsers.some((r) => r.id === userId)) return true;
+  if (deviceId && revokedDevices.some((r) => r.id === deviceId)) return true;
+  if (email && revokedEmails.some((r) => r.id.toLowerCase() === email.toLowerCase())) return true;
+  if (name) {
+    const norm = normalizeNameKey(name);
+    if (revokedNames.some((r) => normalizeNameKey(r.id) === norm)) return true;
+  }
+
+  // Also check local sessions list for any matching revoked session
+  const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
+  const matchingLocal = localSessions.find(
+    (s) =>
+      (userId && s.user_id === userId) ||
+      (email && s.email.toLowerCase() === email.toLowerCase()) ||
+      (name && normalizeNameKey(s.full_name) === normalizeNameKey(name)) ||
+      (deviceId && s.device_id === deviceId)
+  );
+
+  if (matchingLocal && matchingLocal.is_active === false && matchingLocal.revoked_at) {
+    return true;
+  }
+
+  // 3. Check Supabase user_sessions table if configured
+  if (isSupabaseConfigured) {
+    try {
+      const orFilters: string[] = [];
+      if (userId) orFilters.push(`user_id.eq.${userId}`);
+      if (email) orFilters.push(`email.eq.${email}`);
+      if (deviceId) orFilters.push(`device_id.eq.${deviceId}`);
+
+      if (orFilters.length > 0) {
+        const { data: remoteSessions } = await supabase
+          .from('user_sessions')
+          .select('user_id, email, device_id, full_name, is_active, revoked_at')
+          .or(orFilters.join(','))
+          .limit(10);
+
+        if (remoteSessions && remoteSessions.length > 0) {
+          const isBlockedRemotely = remoteSessions.some(
+            (s: any) => s.is_active === false && s.revoked_at
+          );
+
+          if (isBlockedRemotely) {
+            // Synchronize back to local revoked registry
+            if (userId) recordRevocationIdentifier(STORAGE_REVOKED_USERS_KEY, userId);
+            if (email) recordRevocationIdentifier(STORAGE_REVOKED_EMAILS_KEY, email);
+            if (deviceId) recordRevocationIdentifier(STORAGE_REVOKED_DEVICES_KEY, deviceId);
+            if (name) recordRevocationIdentifier(STORAGE_REVOKED_NAMES_KEY, name);
+            return true;
+          }
+        }
+      }
+    } catch {
+      // Ignore network errors and rely on local state
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Helper to add an identifier to a revoked storage list
+ */
+function recordRevocationIdentifier(storageKey: string, id: string): void {
+  const list = getLocalStorage<RevokedRecord[]>(storageKey, []);
+  if (!list.some((r) => r.id === id)) {
+    list.push({ id, revokedAt: new Date().toISOString() });
+    setLocalStorage(storageKey, list);
+  }
+}
+
+/**
+ * Helper to remove an identifier from a revoked storage list
+ */
+function removeRevocationIdentifier(storageKey: string, id: string): void {
+  const list = getLocalStorage<RevokedRecord[]>(storageKey, []);
+  const filtered = list.filter((r) => r.id !== id && normalizeNameKey(r.id) !== normalizeNameKey(id));
+  setLocalStorage(storageKey, filtered);
+}
+
+/**
  * Records a user's login session both locally and in Supabase
  */
 export async function recordUserLoginSession(profile: {
@@ -54,9 +167,6 @@ export async function recordUserLoginSession(profile: {
   const deviceId = profile.device_id || getOrCreateDeviceId();
   const userAgent = getClientDeviceDetails();
   const now = new Date().toISOString();
-
-  // Clear any existing revocation for this fresh login
-  unrevokeUserSessionLocally(profile.id, deviceId);
 
   const newSession: UserSessionRecord = {
     id: `sess_${profile.id}_${deviceId.slice(-6)}`,
@@ -217,11 +327,11 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
 
   // Add all local sessions
   localSessions.forEach((s) => {
-    const isRevoked = revokedUserSet.has(s.user_id) || revokedUserSet.has(s.device_id);
+    const isRevoked = revokedUserSet.has(s.user_id) || revokedUserSet.has(s.device_id) || s.is_active === false;
     const votes = getUserSubmittedCategories(s.user_id);
     sessionMap.set(s.user_id, {
       ...s,
-      is_active: isRevoked ? false : s.is_active,
+      is_active: !isRevoked,
       voted_categories_count: votes.length,
       total_categories_count: 8,
     });
@@ -325,7 +435,11 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
       if (sessionsRes?.data && Array.isArray(sessionsRes.data)) {
         sessionsRes.data.forEach((remoteS: any) => {
           const votes = getUserSubmittedCategories(remoteS.user_id);
-          const isRevoked = revokedUserSet.has(remoteS.user_id) || remoteS.is_active === false;
+          const isRevoked =
+            revokedUserSet.has(remoteS.user_id) ||
+            remoteS.is_active === false ||
+            !!remoteS.revoked_at;
+
           sessionMap.set(remoteS.user_id, {
             id: remoteS.id || `sess_${remoteS.user_id}`,
             user_id: remoteS.user_id,
@@ -335,7 +449,7 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
             device_id: remoteS.device_id,
             user_agent: remoteS.user_agent || 'Web Client',
             ip_address: remoteS.ip_address,
-            is_active: isRevoked ? false : (remoteS.is_active ?? true),
+            is_active: !isRevoked,
             login_at: remoteS.login_at || remoteS.created_at || new Date().toISOString(),
             last_active_at: remoteS.last_active_at || new Date().toISOString(),
             revoked_at: remoteS.revoked_at,
@@ -366,30 +480,31 @@ export async function fetchAllUserSessions(): Promise<UserSessionRecord[]> {
 }
 
 /**
- * Revokes a user's session (Admin Force Logout) in real-time across devices
+ * Revokes a user's session (Admin Force Logout & Access Block)
  */
-export async function revokeUserSession(userId: string, deviceId?: string): Promise<{ success: boolean }> {
+export async function revokeUserSession(
+  userId: string,
+  deviceId?: string,
+  email?: string,
+  fullName?: string
+): Promise<{ success: boolean }> {
   const now = new Date().toISOString();
 
-  // 1. Record in local revoked user set
-  const revokedUsers = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_USERS_KEY, []);
-  if (!revokedUsers.some((r) => r.id === userId)) {
-    revokedUsers.push({ id: userId, revokedAt: now });
-    setLocalStorage(STORAGE_REVOKED_USERS_KEY, revokedUsers);
-  }
-
-  if (deviceId) {
-    const revokedDevices = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_DEVICES_KEY, []);
-    if (!revokedDevices.some((r) => r.id === deviceId)) {
-      revokedDevices.push({ id: deviceId, revokedAt: now });
-      setLocalStorage(STORAGE_REVOKED_DEVICES_KEY, revokedDevices);
-    }
-  }
+  // 1. Record identifiers in local storage revoked lists
+  recordRevocationIdentifier(STORAGE_REVOKED_USERS_KEY, userId);
+  if (deviceId) recordRevocationIdentifier(STORAGE_REVOKED_DEVICES_KEY, deviceId);
+  if (email) recordRevocationIdentifier(STORAGE_REVOKED_EMAILS_KEY, email);
+  if (fullName) recordRevocationIdentifier(STORAGE_REVOKED_NAMES_KEY, fullName);
 
   // 2. Mark session inactive in local storage
   const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
   const updatedSessions = localSessions.map((s) => {
-    if (s.user_id === userId || (deviceId && s.device_id === deviceId)) {
+    if (
+      s.user_id === userId ||
+      (deviceId && s.device_id === deviceId) ||
+      (email && s.email.toLowerCase() === email.toLowerCase()) ||
+      (fullName && normalizeNameKey(s.full_name) === normalizeNameKey(fullName))
+    ) {
       return { ...s, is_active: false, revoked_at: now };
     }
     return s;
@@ -397,18 +512,26 @@ export async function revokeUserSession(userId: string, deviceId?: string): Prom
   setLocalStorage(STORAGE_SESSIONS_KEY, updatedSessions);
 
   // 3. Dispatch window events for local instant response
-  window.dispatchEvent(new CustomEvent('td_user_session_revoked', { detail: { userId, deviceId } }));
+  window.dispatchEvent(
+    new CustomEvent('td_user_session_revoked', {
+      detail: { userId, deviceId, email, fullName },
+    })
+  );
   window.dispatchEvent(new Event('td_user_sessions_updated'));
   window.dispatchEvent(new Event('storage'));
 
   // 4. Update Supabase and broadcast real-time force-logout
   if (isSupabaseConfigured) {
     try {
-      // Update database table
+      // Update user_sessions table
+      const orClauses = [`user_id.eq.${userId}`];
+      if (deviceId) orClauses.push(`device_id.eq.${deviceId}`);
+      if (email) orClauses.push(`email.eq.${email}`);
+
       await supabase
         .from('user_sessions')
         .update({ is_active: false, revoked_at: now })
-        .or(`user_id.eq.${userId}${deviceId ? `,device_id.eq.${deviceId}` : ''}`);
+        .or(orClauses.join(','));
 
       // Broadcast instant push event to student devices
       const authChannel = supabase.channel('system_auth_channel');
@@ -418,6 +541,8 @@ export async function revokeUserSession(userId: string, deviceId?: string): Prom
         payload: {
           userId,
           deviceId: deviceId || null,
+          email: email || null,
+          fullName: fullName || null,
           timestamp: Date.now(),
         },
       });
@@ -434,35 +559,31 @@ export async function revokeUserSession(userId: string, deviceId?: string): Prom
  */
 export async function revokeMultipleUserSessions(
   userIds: string[],
-  deviceIds: string[] = []
+  deviceIds: string[] = [],
+  emails: string[] = [],
+  names: string[] = []
 ): Promise<{ success: boolean; count: number }> {
   const now = new Date().toISOString();
   const userSet = new Set(userIds);
   const deviceSet = new Set(deviceIds);
+  const emailSet = new Set(emails.map((e) => e.toLowerCase()));
+  const nameSet = new Set(names.map((n) => normalizeNameKey(n)));
 
   // 1. Update local revoked lists
-  const revokedUsers = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_USERS_KEY, []);
-  userIds.forEach((uId) => {
-    if (!revokedUsers.some((r) => r.id === uId)) {
-      revokedUsers.push({ id: uId, revokedAt: now });
-    }
-  });
-  setLocalStorage(STORAGE_REVOKED_USERS_KEY, revokedUsers);
-
-  if (deviceIds.length > 0) {
-    const revokedDevices = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_DEVICES_KEY, []);
-    deviceIds.forEach((dId) => {
-      if (!revokedDevices.some((r) => r.id === dId)) {
-        revokedDevices.push({ id: dId, revokedAt: now });
-      }
-    });
-    setLocalStorage(STORAGE_REVOKED_DEVICES_KEY, revokedDevices);
-  }
+  userIds.forEach((uId) => recordRevocationIdentifier(STORAGE_REVOKED_USERS_KEY, uId));
+  deviceIds.forEach((dId) => recordRevocationIdentifier(STORAGE_REVOKED_DEVICES_KEY, dId));
+  emails.forEach((em) => recordRevocationIdentifier(STORAGE_REVOKED_EMAILS_KEY, em));
+  names.forEach((nm) => recordRevocationIdentifier(STORAGE_REVOKED_NAMES_KEY, nm));
 
   // 2. Mark inactive in local sessions
   const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
   const updatedSessions = localSessions.map((s) => {
-    if (userSet.has(s.user_id) || deviceSet.has(s.device_id)) {
+    if (
+      userSet.has(s.user_id) ||
+      deviceSet.has(s.device_id) ||
+      emailSet.has(s.email.toLowerCase()) ||
+      nameSet.has(normalizeNameKey(s.full_name))
+    ) {
       return { ...s, is_active: false, revoked_at: now };
     }
     return s;
@@ -470,7 +591,11 @@ export async function revokeMultipleUserSessions(
   setLocalStorage(STORAGE_SESSIONS_KEY, updatedSessions);
 
   // 3. Dispatch local events
-  window.dispatchEvent(new CustomEvent('td_user_session_revoked', { detail: { userIds, deviceIds } }));
+  window.dispatchEvent(
+    new CustomEvent('td_user_session_revoked', {
+      detail: { userIds, deviceIds, emails, names },
+    })
+  );
   window.dispatchEvent(new Event('td_user_sessions_updated'));
   window.dispatchEvent(new Event('storage'));
 
@@ -489,6 +614,8 @@ export async function revokeMultipleUserSessions(
         payload: {
           userIds,
           deviceIds,
+          emails,
+          names,
           timestamp: Date.now(),
         },
       });
@@ -514,21 +641,22 @@ export async function revokeMultipleUserSessions(
 export async function revokeAllStudentSessions(): Promise<{ success: boolean }> {
   const now = new Date().toISOString();
 
+  // Set global flag
+  setLocalStorage(STORAGE_GLOBAL_REVOKED_KEY, true);
+
   // 1. Mark all local student sessions as revoked
   const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
-  const revokedUsers = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_USERS_KEY, []);
-
   const updatedSessions = localSessions.map((s) => {
     if (s.role !== 'admin') {
-      if (!revokedUsers.some((r) => r.id === s.user_id)) {
-        revokedUsers.push({ id: s.user_id, revokedAt: now });
-      }
+      recordRevocationIdentifier(STORAGE_REVOKED_USERS_KEY, s.user_id);
+      recordRevocationIdentifier(STORAGE_REVOKED_DEVICES_KEY, s.device_id);
+      recordRevocationIdentifier(STORAGE_REVOKED_EMAILS_KEY, s.email);
+      recordRevocationIdentifier(STORAGE_REVOKED_NAMES_KEY, s.full_name);
       return { ...s, is_active: false, revoked_at: now };
     }
     return s;
   });
 
-  setLocalStorage(STORAGE_REVOKED_USERS_KEY, revokedUsers);
   setLocalStorage(STORAGE_SESSIONS_KEY, updatedSessions);
 
   window.dispatchEvent(new CustomEvent('td_user_session_revoked', { detail: { all: true } }));
@@ -566,51 +694,114 @@ export async function revokeAllStudentSessions(): Promise<{ success: boolean }> 
 /**
  * Checks if a specific user or device is currently marked as revoked
  */
-export function isSessionRevoked(userId?: string, deviceId?: string): boolean {
-  if (!userId && !deviceId) return false;
+export function isSessionRevoked(userId?: string, deviceId?: string, email?: string, name?: string): boolean {
+  if (!userId && !deviceId && !email && !name) return false;
+
+  const isGlobal = getLocalStorage<boolean>(STORAGE_GLOBAL_REVOKED_KEY, false);
+  if (isGlobal) return true;
 
   const revokedUsers = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_USERS_KEY, []);
   const revokedDevices = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_DEVICES_KEY, []);
+  const revokedEmails = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_EMAILS_KEY, []);
+  const revokedNames = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_NAMES_KEY, []);
 
-  if (userId && revokedUsers.some((r) => r.id === userId)) {
-    return true;
-  }
-
-  if (deviceId && revokedDevices.some((r) => r.id === deviceId)) {
-    return true;
+  if (userId && revokedUsers.some((r) => r.id === userId)) return true;
+  if (deviceId && revokedDevices.some((r) => r.id === deviceId)) return true;
+  if (email && revokedEmails.some((r) => r.id.toLowerCase() === email.toLowerCase())) return true;
+  if (name) {
+    const norm = normalizeNameKey(name);
+    if (revokedNames.some((r) => normalizeNameKey(r.id) === norm)) return true;
   }
 
   return false;
 }
 
 /**
- * Removes user/device from local revoked registry upon fresh login
+ * Reactivates a user session (Admin allows access again)
  */
-function unrevokeUserSessionLocally(userId: string, deviceId?: string): void {
-  try {
-    const revokedUsers = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_USERS_KEY, []);
-    const filteredUsers = revokedUsers.filter((r) => r.id !== userId);
-    setLocalStorage(STORAGE_REVOKED_USERS_KEY, filteredUsers);
+export async function reactivateUserSession(params: {
+  userId: string;
+  email?: string;
+  deviceId?: string;
+  fullName?: string;
+}): Promise<{ success: boolean }> {
+  const { userId, email, deviceId, fullName } = params;
 
-    if (deviceId) {
-      const revokedDevices = getLocalStorage<RevokedRecord[]>(STORAGE_REVOKED_DEVICES_KEY, []);
-      const filteredDevices = revokedDevices.filter((r) => r.id !== deviceId);
-      setLocalStorage(STORAGE_REVOKED_DEVICES_KEY, filteredDevices);
+  // Clear global flag if single user is being reactivated
+  setLocalStorage(STORAGE_GLOBAL_REVOKED_KEY, false);
+
+  // Remove from local revoked lists
+  removeRevocationIdentifier(STORAGE_REVOKED_USERS_KEY, userId);
+  if (deviceId) removeRevocationIdentifier(STORAGE_REVOKED_DEVICES_KEY, deviceId);
+  if (email) removeRevocationIdentifier(STORAGE_REVOKED_EMAILS_KEY, email);
+  if (fullName) removeRevocationIdentifier(STORAGE_REVOKED_NAMES_KEY, fullName);
+
+  // Update local session
+  const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
+  const updated = localSessions.map((s) => {
+    if (
+      s.user_id === userId ||
+      (email && s.email.toLowerCase() === email.toLowerCase()) ||
+      (fullName && normalizeNameKey(s.full_name) === normalizeNameKey(fullName))
+    ) {
+      return { ...s, is_active: true, revoked_at: undefined };
     }
-  } catch {
-    // Ignore storage error
+    return s;
+  });
+  setLocalStorage(STORAGE_SESSIONS_KEY, updated);
+  window.dispatchEvent(new Event('td_user_sessions_updated'));
+
+  // Update Supabase
+  if (isSupabaseConfigured) {
+    try {
+      const orClauses = [`user_id.eq.${userId}`];
+      if (email) orClauses.push(`email.eq.${email}`);
+      if (deviceId) orClauses.push(`device_id.eq.${deviceId}`);
+
+      await supabase
+        .from('user_sessions')
+        .update({ is_active: true, revoked_at: null })
+        .or(orClauses.join(','));
+
+      const authChannel = supabase.channel('system_auth_channel');
+      await authChannel.send({
+        type: 'broadcast',
+        event: 'user_reactivated',
+        payload: {
+          userId,
+          email,
+          deviceId,
+          fullName,
+          timestamp: Date.now(),
+        },
+      });
+    } catch {
+      // Handled locally
+    }
   }
+
+  return { success: true };
 }
 
 /**
- * Reactivates a user session (Admin allows access again)
+ * Reactivates multiple user sessions in batch (Admin allows access for selected)
  */
-export async function reactivateUserSession(userId: string): Promise<{ success: boolean }> {
-  unrevokeUserSessionLocally(userId);
+export async function reactivateMultipleUserSessions(
+  users: Array<{ userId: string; email?: string; deviceId?: string; fullName?: string }>
+): Promise<{ success: boolean; count: number }> {
+  setLocalStorage(STORAGE_GLOBAL_REVOKED_KEY, false);
 
+  for (const u of users) {
+    removeRevocationIdentifier(STORAGE_REVOKED_USERS_KEY, u.userId);
+    if (u.deviceId) removeRevocationIdentifier(STORAGE_REVOKED_DEVICES_KEY, u.deviceId);
+    if (u.email) removeRevocationIdentifier(STORAGE_REVOKED_EMAILS_KEY, u.email);
+    if (u.fullName) removeRevocationIdentifier(STORAGE_REVOKED_NAMES_KEY, u.fullName);
+  }
+
+  const userIds = users.map((u) => u.userId);
   const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
   const updated = localSessions.map((s) => {
-    if (s.user_id === userId) {
+    if (userIds.includes(s.user_id)) {
       return { ...s, is_active: true, revoked_at: undefined };
     }
     return s;
@@ -623,11 +814,21 @@ export async function reactivateUserSession(userId: string): Promise<{ success: 
       await supabase
         .from('user_sessions')
         .update({ is_active: true, revoked_at: null })
-        .eq('user_id', userId);
+        .in('user_id', userIds);
+
+      const authChannel = supabase.channel('system_auth_channel');
+      await authChannel.send({
+        type: 'broadcast',
+        event: 'users_reactivated_batch',
+        payload: {
+          userIds,
+          timestamp: Date.now(),
+        },
+      });
     } catch {
       // Handled locally
     }
   }
 
-  return { success: true };
+  return { success: true, count: users.length };
 }

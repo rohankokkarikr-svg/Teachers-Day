@@ -12,7 +12,6 @@ import {
   XCircle,
   RefreshCw,
   Download,
-  CheckCheck,
   RotateCcw,
   Clock,
   Vote,
@@ -138,15 +137,20 @@ export default function AdminUsers() {
     setSelectedUserIds(new Set());
   };
 
-  // Force Logout Actions
+  // Force Logout & Reactivation Actions
   const handleConfirmSingleLogout = async () => {
     if (!singleLogoutTarget) return;
     setIsProcessingLogout(true);
     try {
-      await revokeUserSession(singleLogoutTarget.user_id, singleLogoutTarget.device_id);
+      await revokeUserSession(
+        singleLogoutTarget.user_id,
+        singleLogoutTarget.device_id,
+        singleLogoutTarget.email,
+        singleLogoutTarget.full_name
+      );
       toast.success(
-        'User Logged Out',
-        `${singleLogoutTarget.full_name}'s session has been terminated across their device in real-time.`
+        'User Logged Out & Access Restricted',
+        `${singleLogoutTarget.full_name}'s session has been terminated and access is blocked until allowed.`
       );
       setSingleLogoutTarget(null);
       loadData(true);
@@ -163,14 +167,15 @@ export default function AdminUsers() {
 
     setIsProcessingLogout(true);
     try {
-      const targetDevices = sessions
-        .filter((s) => selectedUserIds.has(s.user_id))
-        .map((s) => s.device_id);
+      const selectedSessions = sessions.filter((s) => selectedUserIds.has(s.user_id));
+      const targetDevices = selectedSessions.map((s) => s.device_id);
+      const targetEmails = selectedSessions.map((s) => s.email);
+      const targetNames = selectedSessions.map((s) => s.full_name);
 
-      await revokeMultipleUserSessions(userIdsArray, targetDevices);
+      await revokeMultipleUserSessions(userIdsArray, targetDevices, targetEmails, targetNames);
       toast.success(
         'Bulk Logout Complete',
-        `Successfully logged out ${userIdsArray.length} user session(s) in real-time.`
+        `Successfully logged out and restricted ${userIdsArray.length} user account(s).`
       );
       setSelectedUserIds(new Set());
       setShowBulkLogoutModal(false);
@@ -188,7 +193,7 @@ export default function AdminUsers() {
       await revokeAllStudentSessions();
       toast.success(
         'Global Logout Complete',
-        'All student sessions have been force-logged out across all devices.'
+        'All student sessions have been logged out and restricted across all devices.'
       );
       setShowLogoutAllModal(false);
       setSelectedUserIds(new Set());
@@ -200,13 +205,43 @@ export default function AdminUsers() {
     }
   };
 
-  const handleReactivateSession = async (userId: string, name: string) => {
+  const handleReactivateSession = async (session: UserSessionRecord) => {
     try {
-      await reactivateUserSession(userId);
-      toast.success('Access Restored', `${name} is now permitted to log in again.`);
+      await reactivateUserSession({
+        userId: session.user_id,
+        email: session.email,
+        deviceId: session.device_id,
+        fullName: session.full_name,
+      });
+      toast.success('Access Restored', `${session.full_name} is now permitted to log in again.`);
       loadData(true);
     } catch {
       toast.error('Notice', 'Could not reactivate user session.');
+    }
+  };
+
+  const handleBulkReactivateSelected = async () => {
+    const userIdsArray = Array.from(selectedUserIds);
+    if (userIdsArray.length === 0) return;
+
+    try {
+      const selectedSessions = sessions.filter((s) => selectedUserIds.has(s.user_id));
+      for (const s of selectedSessions) {
+        await reactivateUserSession({
+          userId: s.user_id,
+          email: s.email,
+          deviceId: s.device_id,
+          fullName: s.full_name,
+        });
+      }
+      toast.success(
+        'Access Restored for Selected',
+        `Successfully allowed login access for ${selectedSessions.length} user(s).`
+      );
+      setSelectedUserIds(new Set());
+      loadData(true);
+    } catch {
+      toast.error('Action Failed', 'Failed to restore access for selected users.');
     }
   };
 
@@ -436,6 +471,15 @@ export default function AdminUsers() {
                 Deselect All
               </Button>
               <Button
+                variant="outline"
+                size="sm"
+                icon={<RotateCcw size={13} className="text-emerald-400" />}
+                onClick={handleBulkReactivateSelected}
+                className="text-xs !py-1 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
+              >
+                Allow Access for Selected ({selectedUserIds.size})
+              </Button>
+              <Button
                 variant="danger"
                 size="sm"
                 icon={<LogOut size={13} />}
@@ -452,15 +496,16 @@ export default function AdminUsers() {
       {/* Users & Sessions List Table / Cards */}
       {isLoading ? (
         <div className="space-y-3">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <LoadingSkeleton key={i} variant="card" />
+          {[1, 2, 3, 4, 5].map((i) => (
+            <LoadingSkeleton key={i} className="h-24 w-full rounded-2xl" />
           ))}
         </div>
       ) : filteredSessions.length === 0 ? (
-        <Card className="p-12 text-center text-surface-400 space-y-3">
-          <p className="text-base font-semibold text-white">No user sessions found</p>
-          <p className="text-xs max-w-sm mx-auto">
-            No user login records match your search criteria or selected filters.
+        <Card variant="flat" className="text-center py-12">
+          <UserCheck size={40} className="mx-auto text-surface-600 mb-3" />
+          <h3 className="text-base font-semibold text-white mb-1">No matching sessions found</h3>
+          <p className="text-sm text-surface-400 max-w-sm mx-auto mb-4">
+            Try adjusting your search terms or status filters.
           </p>
           <Button
             variant="outline"
@@ -476,23 +521,23 @@ export default function AdminUsers() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {/* Table Header Controls */}
-          <div className="flex items-center justify-between px-2 text-xs text-surface-400">
-            <div className="flex items-center gap-2">
+          {/* Quick Selection Summary Header */}
+          <div className="flex items-center justify-between px-1 text-xs text-surface-400">
+            <span>
+              Showing {filteredSessions.length} of {totalUsers} user records
+            </span>
+            {filteredSessions.some((s) => s.role !== 'admin') && (
               <button
                 type="button"
                 onClick={handleSelectAllFiltered}
-                className="text-primary-400 hover:text-primary-300 font-medium flex items-center gap-1"
+                className="text-primary-400 hover:text-primary-300 transition-colors"
               >
-                <CheckCheck size={14} />
-                Select All ({filteredSessions.filter((s) => s.role !== 'admin').length})
+                Select all visible students
               </button>
-            </div>
-            <span>Showing {filteredSessions.length} user session records</span>
+            )}
           </div>
 
-          {/* List of Session Cards */}
-          <AnimatePresence>
+          <AnimatePresence mode="popLayout">
             {filteredSessions.map((session) => {
               const isSelected = selectedUserIds.has(session.user_id);
               const isAdmin = session.role === 'admin';
@@ -564,7 +609,7 @@ export default function AdminUsers() {
                             ) : (
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-rose-500/15 text-rose-300 border border-rose-500/30">
                                 <XCircle size={10} />
-                                Logged Out
+                                Access Restricted
                               </span>
                             )}
                           </div>
@@ -633,18 +678,18 @@ export default function AdminUsers() {
                                 icon={<LogOut size={13} className="text-rose-400" />}
                                 onClick={() => setSingleLogoutTarget(session)}
                                 className="text-xs !py-1.5 border-rose-500/30 hover:border-rose-500 hover:bg-rose-500/10 text-rose-300"
-                                title="Instantly force logout this user from their device"
+                                title="Instantly force logout this user and restrict re-login"
                               >
                                 Force Logout
                               </Button>
                             ) : (
                               <Button
-                                variant="ghost"
+                                variant="outline"
                                 size="sm"
                                 icon={<RotateCcw size={13} className="text-emerald-400" />}
-                                onClick={() => handleReactivateSession(session.user_id, session.full_name)}
-                                className="text-xs !py-1.5 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
-                                title="Restore user login access"
+                                onClick={() => handleReactivateSession(session)}
+                                className="text-xs !py-1.5 border-emerald-500/30 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+                                title="Allow this user to log in again"
                               >
                                 Allow Access
                               </Button>
@@ -668,8 +713,8 @@ export default function AdminUsers() {
         onConfirm={handleConfirmSingleLogout}
         title="Confirm Remote Force Logout"
         message={`Are you sure you want to terminate the active session for "${singleLogoutTarget?.full_name}"?`}
-        warning="This user will be immediately logged out of their connected device in real-time."
-        confirmText="Force Logout User"
+        warning="This user will be immediately logged out of their connected device and blocked from logging in again until you click Allow Access."
+        confirmText="Force Logout & Restrict User"
         cancelText="Cancel"
         variant="danger"
         isLoading={isProcessingLogout}
@@ -682,7 +727,7 @@ export default function AdminUsers() {
         onConfirm={handleConfirmBulkLogout}
         title={`Force Logout (${selectedUserIds.size}) Selected Users`}
         message={`You are about to terminate active sessions for ${selectedUserIds.size} student account(s).`}
-        warning="All selected students will be immediately logged out of their devices in real-time."
+        warning="All selected students will be immediately logged out and prevented from logging back in until you click Allow Access."
         confirmText={`Force Logout (${selectedUserIds.size}) Users`}
         cancelText="Cancel"
         variant="danger"
@@ -696,7 +741,7 @@ export default function AdminUsers() {
         onConfirm={handleConfirmLogoutAll}
         title="Force Logout All Student Users"
         message="Are you sure you want to force logout every active student user across all devices?"
-        warning="This will immediately revoke active sessions for all logged-in students. Students will need to log in again to place any remaining votes."
+        warning="This will immediately revoke active sessions and block all students from logging in until access is restored."
         confirmText="Force Logout All Students"
         cancelText="Cancel"
         variant="danger"

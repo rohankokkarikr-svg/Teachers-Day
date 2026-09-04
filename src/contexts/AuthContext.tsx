@@ -10,6 +10,7 @@ import {
 import {
   recordUserLoginSession,
   isSessionRevoked,
+  isUserAccessBlocked,
   updateSessionHeartbeat,
 } from '../lib/sessionService';
 import { toast } from '../components/ui/Toast';
@@ -95,10 +96,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               const parsedProfile = JSON.parse(savedProfile);
               const deviceId = getOrCreateDeviceId();
 
-              // Check if session was revoked while offline
-              if (parsedProfile.role !== 'admin' && isSessionRevoked(parsedUser.id, deviceId)) {
-                handleEnforceForcedLogout();
-                return;
+              // Check if session or account was revoked / blocked while offline
+              if (parsedProfile.role !== 'admin') {
+                const isBlocked =
+                  isSessionRevoked(parsedUser.id, deviceId, parsedProfile.email, parsedProfile.full_name) ||
+                  (await isUserAccessBlocked({
+                    userId: parsedUser.id,
+                    email: parsedProfile.email,
+                    name: parsedProfile.full_name,
+                    deviceId,
+                  }));
+
+                if (isBlocked) {
+                  handleEnforceForcedLogout('Access Restricted: Your account has been logged out by the administrator.');
+                  return;
+                }
               }
 
               setUser(parsedUser);
@@ -443,6 +455,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           : '33333333-0000-0000-0000-' + Math.random().toString(16).substring(2, 14).padEnd(12, '0');
         localStorage.setItem(`td_student_id_${slug}`, studentId);
       }
+    }
+
+    // 4. Check if student or device is currently revoked/blocked by administrator
+    const isBlocked =
+      isSessionRevoked(studentId || undefined, deviceId, email, cleanName) ||
+      (await isUserAccessBlocked({
+        userId: studentId || undefined,
+        email,
+        name: cleanName,
+        deviceId,
+      }));
+
+    if (isBlocked) {
+      return {
+        success: false,
+        error: 'Access Denied: Your account has been logged out and restricted by the administrator. Please contact the admin to allow access.',
+      };
     }
 
     const studentUser = {

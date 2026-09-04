@@ -201,13 +201,13 @@ export function useRealtime(categoryId?: string) {
     };
   }, [fetchLeaderboard]);
 
-  // Ultra-Fast Smart Polling & Mobile Visibility Reconnection (every 2.5s)
+  // Regular Database Polling & Mobile Visibility Reconnection (every 10s)
   useEffect(() => {
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         fetchLeaderboard(true);
       }
-    }, 2500);
+    }, 10000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {

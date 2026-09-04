@@ -64,9 +64,26 @@ export default function AdminAppreciation() {
     window.addEventListener('td_appreciation_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
+    // 10-second regular database polling loop
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchMessages();
+      }
+    }, 10000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchMessages();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       window.removeEventListener('td_appreciation_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(interval);
     };
   }, [fetchMessages]);
 

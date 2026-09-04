@@ -139,10 +139,18 @@ export function useTeachers(categoryId?: string) {
     window.addEventListener('td_admin_categories_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
+    // 10-second regular database polling loop
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchTeachers();
+      }
+    }, 10000);
+
     return () => {
       window.removeEventListener('td_admin_teachers_updated', handleUpdate);
       window.removeEventListener('td_admin_categories_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
+      clearInterval(interval);
     };
   }, [fetchTeachers]);
 

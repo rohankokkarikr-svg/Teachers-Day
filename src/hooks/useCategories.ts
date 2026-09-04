@@ -151,12 +151,35 @@ export function useCategories(userId?: string) {
     window.addEventListener('td_system_reset', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
+    // 10-second regular database polling loop
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchCategories();
+      }
+    }, 10000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchCategories();
+      }
+    };
+
+    const handleOnline = () => {
+      fetchCategories();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', handleOnline);
+
     return () => {
       window.removeEventListener('td_admin_categories_updated', handleUpdate);
       window.removeEventListener('td_admin_teachers_updated', handleUpdate);
       window.removeEventListener('td_votes_updated', handleUpdate);
       window.removeEventListener('td_system_reset', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
+      clearInterval(interval);
     };
   }, [fetchCategories]);
 

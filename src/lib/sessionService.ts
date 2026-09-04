@@ -114,53 +114,122 @@ export function isSessionRevoked(
 }
 
 /**
- * Comprehensive async access check: checks both local storage and Supabase remote records.
- * If revoked by the admin, returns allowed: false and blocks login or session access.
+ * Comprehensive async access check: checks both local storage and Supabase remote records across profiles and user_sessions.
+ * If revoked by the admin, returns allowed: false and blocks login or session access across all devices.
  */
 export async function checkUserAccessAllowed(params: AccessCheckParams): Promise<AccessCheckResult> {
   const { userId, name, email, deviceId } = params;
   const nameSlug = normalizeNameKey(name);
   const derivedEmail = email || (nameSlug ? `${nameSlug}@student.college` : undefined);
 
-  // 1. Fast local check
+  // 1. Fast local synchronous check
   if (isSessionRevoked(userId, deviceId, name, derivedEmail)) {
     return {
       allowed: false,
       reason:
-        'Access Denied: Your account access has been revoked by the administrator. You cannot log in until an administrator grants you access.',
+        'Access Denied: Your account access has been restricted by the administrator. You cannot log in until an administrator grants you access.',
     };
   }
 
-  // 2. Supabase remote check
+  // 2. Supabase remote ground truth check
   if (isSupabaseConfigured) {
     try {
-      let query = supabase
-        .from('user_sessions')
-        .select('id, user_id, email, is_active, revoked_at')
-        .eq('is_active', false)
-        .limit(1);
+      // 2a. Check user_sessions table
+      const sessionQueries: PromiseLike<any>[] = [];
+      if (userId) {
+        sessionQueries.push(
+          supabase
+            .from('user_sessions')
+            .select('id, user_id, email, is_active, revoked_at')
+            .eq('user_id', userId)
+            .limit(1)
+        );
+      }
+      if (derivedEmail) {
+        sessionQueries.push(
+          supabase
+            .from('user_sessions')
+            .select('id, user_id, email, is_active, revoked_at')
+            .ilike('email', derivedEmail)
+            .limit(1)
+        );
+      }
+      if (name) {
+        sessionQueries.push(
+          supabase
+            .from('user_sessions')
+            .select('id, user_id, email, is_active, revoked_at')
+            .ilike('full_name', name.trim())
+            .limit(1)
+        );
+      }
+      if (deviceId) {
+        sessionQueries.push(
+          supabase
+            .from('user_sessions')
+            .select('id, user_id, email, is_active, revoked_at')
+            .eq('device_id', deviceId)
+            .limit(1)
+        );
+      }
 
-      const conditions: string[] = [];
-      if (userId) conditions.push(`user_id.eq.${userId}`);
-      if (derivedEmail) conditions.push(`email.eq.${derivedEmail}`);
-      if (deviceId) conditions.push(`device_id.eq.${deviceId}`);
+      // 2b. Check profiles table
+      const profileQueries: PromiseLike<any>[] = [];
+      if (userId) {
+        profileQueries.push(
+          supabase
+            .from('profiles')
+            .select('id, email, is_active, revoked_at')
+            .eq('id', userId)
+            .limit(1)
+        );
+      }
+      if (derivedEmail) {
+        profileQueries.push(
+          supabase
+            .from('profiles')
+            .select('id, email, is_active, revoked_at')
+            .ilike('email', derivedEmail)
+            .limit(1)
+        );
+      }
+      if (name) {
+        profileQueries.push(
+          supabase
+            .from('profiles')
+            .select('id, email, is_active, revoked_at')
+            .ilike('full_name', name.trim())
+            .limit(1)
+        );
+      }
+      if (deviceId) {
+        profileQueries.push(
+          supabase
+            .from('profiles')
+            .select('id, email, is_active, revoked_at')
+            .eq('device_id', deviceId)
+            .limit(1)
+        );
+      }
 
-      if (conditions.length > 0) {
-        query = query.or(conditions.join(','));
-        const { data, error } = await query;
+      const allResponses = await Promise.all([...sessionQueries, ...profileQueries]);
 
-        if (!error && data && data.length > 0) {
-          // Record revoked locally so future fast-path checks catch it immediately
-          if (userId) markUserRevokedLocally(userId);
-          if (deviceId) markDeviceRevokedLocally(deviceId);
-          if (derivedEmail) markEmailRevokedLocally(derivedEmail);
-          if (nameSlug) markNameRevokedLocally(nameSlug);
+      for (const res of allResponses) {
+        if (res?.data && Array.isArray(res.data) && res.data.length > 0) {
+          const row = res.data[0];
+          if (row.is_active === false || row.revoked_at != null) {
+            // Persist locally so subsequent checks block immediately
+            if (userId) markUserRevokedLocally(userId);
+            if (deviceId) markDeviceRevokedLocally(deviceId);
+            if (derivedEmail) markEmailRevokedLocally(derivedEmail);
+            if (nameSlug) markNameRevokedLocally(nameSlug);
 
-          return {
-            allowed: false,
-            reason:
-              'Access Denied: Your account access has been revoked by the administrator. You cannot log in until an administrator grants you access.',
-          };
+            return {
+              allowed: false,
+              reason:
+                'Access Denied: Your account access has been restricted by the administrator. You cannot log in until an administrator grants you access.',
+            };
+          }
         }
       }
     } catch {
@@ -563,17 +632,24 @@ export async function revokeUserSession(
   email?: string
 ): Promise<{ success: boolean }> {
   const now = new Date().toISOString();
+  const nameSlug = normalizeNameKey(fullName);
+  const cleanEmail = email || (nameSlug ? `${nameSlug}@student.college` : undefined);
 
   // 1. Mark in all local revocation sets
   markUserRevokedLocally(userId);
   if (deviceId) markDeviceRevokedLocally(deviceId);
-  if (email) markEmailRevokedLocally(email);
-  if (fullName) markNameRevokedLocally(normalizeNameKey(fullName));
+  if (cleanEmail) markEmailRevokedLocally(cleanEmail);
+  if (nameSlug) markNameRevokedLocally(nameSlug);
 
   // 2. Mark session inactive in local storage
   const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
   const updatedSessions = localSessions.map((s) => {
-    if (s.user_id === userId || (deviceId && s.device_id === deviceId)) {
+    if (
+      s.user_id === userId ||
+      (deviceId && s.device_id === deviceId) ||
+      (cleanEmail && s.email.toLowerCase() === cleanEmail.toLowerCase()) ||
+      (nameSlug && normalizeNameKey(s.full_name) === nameSlug)
+    ) {
       return { ...s, is_active: false, revoked_at: now };
     }
     return s;
@@ -583,22 +659,64 @@ export async function revokeUserSession(
   // 3. Dispatch window events for local instant response
   window.dispatchEvent(
     new CustomEvent('td_user_session_revoked', {
-      detail: { userId, deviceId, name: fullName, email },
+      detail: { userId, deviceId, name: fullName, email: cleanEmail },
     })
   );
   window.dispatchEvent(new Event('td_user_sessions_updated'));
   window.dispatchEvent(new Event('storage'));
 
-  // 4. Update Supabase and broadcast real-time force-logout
+  // 4. Update Supabase across user_sessions and profiles
   if (isSupabaseConfigured) {
     try {
-      // Update database table
-      await supabase
+      // 4a. Update user_sessions
+      const sessionUpdate = supabase
         .from('user_sessions')
-        .update({ is_active: false, revoked_at: now })
-        .or(`user_id.eq.${userId}${deviceId ? `,device_id.eq.${deviceId}` : ''}`);
+        .update({ is_active: false, revoked_at: now });
 
-      // Broadcast instant push event to student devices
+      if (userId) {
+        await sessionUpdate.eq('user_id', userId);
+      } else if (cleanEmail) {
+        await sessionUpdate.ilike('email', cleanEmail);
+      }
+
+      // Guarantee at least one revoked record exists in user_sessions
+      await supabase.from('user_sessions').upsert(
+        {
+          user_id: userId,
+          full_name: fullName || 'Student',
+          email: cleanEmail || `${userId}@student.college`,
+          device_id: deviceId || getOrCreateDeviceId(),
+          is_active: false,
+          revoked_at: now,
+        },
+        { onConflict: 'user_id,device_id' }
+      );
+
+      // 4b. Update profiles table
+      try {
+        if (userId) {
+          await supabase
+            .from('profiles')
+            .update({ is_active: false, revoked_at: now })
+            .eq('id', userId);
+        }
+        if (cleanEmail) {
+          await supabase
+            .from('profiles')
+            .update({ is_active: false, revoked_at: now })
+            .ilike('email', cleanEmail);
+        }
+        if (fullName) {
+          await supabase
+            .from('profiles')
+            .update({ is_active: false, revoked_at: now })
+            .ilike('full_name', fullName.trim());
+        }
+      } catch {
+        // Handled gracefully
+      }
+
+      // 4c. Broadcast instant push event to student devices
       const authChannel = supabase.channel('system_auth_channel');
       await authChannel.send({
         type: 'broadcast',
@@ -606,7 +724,7 @@ export async function revokeUserSession(
         payload: {
           userId,
           deviceId: deviceId || null,
-          email: email || null,
+          email: cleanEmail || null,
           name: fullName || null,
           timestamp: Date.now(),
         },
@@ -661,6 +779,17 @@ export async function revokeMultipleUserSessions(
         p_device_ids: deviceIds,
       });
 
+      // Direct fallbacks for both tables
+      await supabase
+        .from('user_sessions')
+        .update({ is_active: false, revoked_at: now })
+        .in('user_id', userIds);
+
+      await supabase
+        .from('profiles')
+        .update({ is_active: false, revoked_at: now })
+        .in('id', userIds);
+
       const authChannel = supabase.channel('system_auth_channel');
       await authChannel.send({
         type: 'broadcast',
@@ -672,14 +801,7 @@ export async function revokeMultipleUserSessions(
         },
       });
     } catch {
-      try {
-        await supabase
-          .from('user_sessions')
-          .update({ is_active: false, revoked_at: now })
-          .in('user_id', userIds);
-      } catch {
-        // Handled locally
-      }
+      // Handled locally
     }
   }
 
@@ -715,6 +837,16 @@ export async function revokeAllStudentSessions(): Promise<{ success: boolean }> 
     try {
       await supabase.rpc('revoke_all_student_sessions');
 
+      await supabase
+        .from('user_sessions')
+        .update({ is_active: false, revoked_at: now })
+        .eq('role', 'student');
+
+      await supabase
+        .from('profiles')
+        .update({ is_active: false, revoked_at: now })
+        .eq('role', 'student');
+
       const authChannel = supabase.channel('system_auth_channel');
       await authChannel.send({
         type: 'broadcast',
@@ -725,14 +857,7 @@ export async function revokeAllStudentSessions(): Promise<{ success: boolean }> 
         },
       });
     } catch {
-      try {
-        await supabase
-          .from('user_sessions')
-          .update({ is_active: false, revoked_at: now })
-          .eq('role', 'student');
-      } catch {
-        // Handled locally
-      }
+      // Handled locally
     }
   }
 
@@ -799,8 +924,11 @@ export async function reactivateUserSession(
   // 2. Mark active in local sessions
   const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
   const updated = localSessions.map((s) => {
-    if (s.user_id === userId || (email && s.email.toLowerCase() === email.toLowerCase())) {
-      // Also unrevoke associated properties
+    if (
+      s.user_id === userId ||
+      (email && s.email.toLowerCase() === email.toLowerCase()) ||
+      (name && normalizeNameKey(s.full_name) === normalizeNameKey(name))
+    ) {
       unrevokeUserSessionLocally(s.user_id, s.device_id, s.email, s.full_name);
       return { ...s, is_active: true, revoked_at: undefined };
     }
@@ -815,13 +943,18 @@ export async function reactivateUserSession(
   window.dispatchEvent(new Event('td_user_sessions_updated'));
   window.dispatchEvent(new Event('storage'));
 
-  // 4. Update Supabase
+  // 4. Update Supabase across user_sessions and profiles
   if (isSupabaseConfigured) {
     try {
       await supabase
         .from('user_sessions')
         .update({ is_active: true, revoked_at: null })
-        .eq('user_id', userId);
+        .or(`user_id.eq.${userId}${email ? `,email.eq.${email}` : ''}`);
+
+      await supabase
+        .from('profiles')
+        .update({ is_active: true, revoked_at: null })
+        .or(`id.eq.${userId}${email ? `,email.eq.${email}` : ''}`);
 
       // Broadcast access restored event
       const authChannel = supabase.channel('system_auth_channel');
@@ -871,13 +1004,22 @@ export async function reactivateMultipleUserSessions(
   window.dispatchEvent(new Event('td_user_sessions_updated'));
   window.dispatchEvent(new Event('storage'));
 
-  // 3. Supabase update
+  // 3. Supabase update across user_sessions and profiles
   if (isSupabaseConfigured) {
     try {
+      await supabase.rpc('reactivate_user_sessions', {
+        p_user_ids: userIds,
+      });
+
       await supabase
         .from('user_sessions')
         .update({ is_active: true, revoked_at: null })
         .in('user_id', userIds);
+
+      await supabase
+        .from('profiles')
+        .update({ is_active: true, revoked_at: null })
+        .in('id', userIds);
 
       const authChannel = supabase.channel('system_auth_channel');
       await authChannel.send({
@@ -895,4 +1037,5 @@ export async function reactivateMultipleUserSessions(
 
   return { success: true, count: userIds.length };
 }
+
 

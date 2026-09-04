@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Award, User, ArrowRight, Shield, Lock, CheckCircle2, Smartphone } from 'lucide-react';
+import { Award, User, ArrowRight, Shield, Lock, CheckCircle2, Smartphone, ShieldAlert } from 'lucide-react';
 import { APP_NAME, APP_YEAR, ROUTES } from '../../lib/constants';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
@@ -58,7 +58,7 @@ export default function LoginPage() {
         navigate(ROUTES.VOTE);
       } else {
         setError(result.error || 'Failed to sign in. Please try again.');
-        toast.error('Sign In Blocked', result.error || 'Could not sign in with this name.');
+        toast.error('Access Restricted', result.error || 'Could not sign in with this account.');
       }
     } catch {
       toast.error('Authentication Error', 'An unexpected error occurred. Please try again.');
@@ -188,6 +188,13 @@ export default function LoginPage() {
               </div>
             )}
 
+            {error && (
+              <div className="bg-rose-500/15 border border-rose-500/30 rounded-xl p-3 text-xs text-rose-300 flex items-start gap-2.5">
+                <ShieldAlert size={16} className="text-rose-400 flex-shrink-0 mt-0.5" />
+                <p className="leading-relaxed">{error}</p>
+              </div>
+            )}
+
             <Input
               label="Your Full Name"
               placeholder="e.g. Rahul Sharma"
@@ -196,7 +203,6 @@ export default function LoginPage() {
                 setFullName(e.target.value);
                 setError('');
               }}
-              error={error}
               icon={<User size={18} />}
               autoComplete="name"
               autoFocus
@@ -230,7 +236,12 @@ export default function LoginPage() {
               autoFocus
             />
 
-            {error && <p className="text-xs text-rose-400 mt-1">{error}</p>}
+            {error && (
+              <div className="bg-rose-500/15 border border-rose-500/30 rounded-xl p-3 text-xs text-rose-300 flex items-start gap-2.5">
+                <ShieldAlert size={16} className="text-rose-400 flex-shrink-0 mt-0.5" />
+                <p className="leading-relaxed">{error}</p>
+              </div>
+            )}
 
             <Button
               type="submit"

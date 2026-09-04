@@ -67,8 +67,8 @@ export function useRealtime(categoryId?: string) {
   const lastFetchTimeRef = useRef<number>(0);
 
   // Optimized Leaderboard Fetcher using PostgreSQL RPC or unified fast join
-  const fetchLeaderboard = useCallback(async (isSilent = false) => {
-    const currentCatId = categoryIdRef.current;
+  const fetchLeaderboard = useCallback(async (isSilent = false, overrideCatId?: string) => {
+    const currentCatId = overrideCatId || categoryIdRef.current;
     const s = getLocalStorage<VotingSettings | null>('td_admin_settings', null);
     if (s) setShowLiveCounts(s.show_live_counts);
 
@@ -211,6 +211,15 @@ export function useRealtime(categoryId?: string) {
     }
   }, []);
 
+  // Immediate categoryId change handler
+  useEffect(() => {
+    categoryIdRef.current = categoryId;
+    if (categoryId) {
+      setLeaderboard(getCategoryFallbackLeaderboard(categoryId));
+      fetchLeaderboard(false, categoryId);
+    }
+  }, [categoryId, fetchLeaderboard]);
+
   // Debounced & Throttled Refresh Scheduler to prevent Request Storms under high concurrency
   const scheduleDebouncedFetch = useCallback(() => {
     if (debounceTimerRef.current) return; // Fetch already scheduled in window
@@ -227,10 +236,8 @@ export function useRealtime(categoryId?: string) {
     }, wait);
   }, [fetchLeaderboard]);
 
-  // Initial and window event listeners
+  // Window event listeners
   useEffect(() => {
-    fetchLeaderboard();
-
     const handleUpdate = () => {
       scheduleDebouncedFetch();
     };
@@ -254,7 +261,7 @@ export function useRealtime(categoryId?: string) {
         debounceTimerRef.current = null;
       }
     };
-  }, [fetchLeaderboard, scheduleDebouncedFetch]);
+  }, [scheduleDebouncedFetch]);
 
   // Fallback Polling (30s, paused when hidden to preserve battery & bandwidth)
   useEffect(() => {

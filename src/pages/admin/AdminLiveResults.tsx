@@ -256,7 +256,7 @@ export default function AdminLiveResults() {
             ))}
           </div>
         ) : (
-          <Leaderboard entries={leaderboard} showLiveCounts={true} />
+          <Leaderboard key={activeCategoryId} entries={leaderboard} showLiveCounts={true} />
         )}
       </div>
 

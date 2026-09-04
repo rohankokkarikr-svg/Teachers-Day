@@ -17,7 +17,9 @@
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import {
-  validateAnonKey,
+  extractProjectRef,
+  validateAndInspectKey,
+  testSupabaseConnection,
   discoverCategoryAndTeachers,
   prepareTestStudents,
   cleanupTestRun,
@@ -59,7 +61,6 @@ async function runConcurrentBatch(supabase, students, fixture, options = {}) {
   const latencies = [];
   let successCount = 0;
   let alreadyProcessedCount = 0;
-  let duplicateRejectedCount = 0;
   const errorSummary = {
     INVALID_SESSION: 0,
     CATEGORY_NOT_FOUND: 0,
@@ -150,7 +151,9 @@ async function runConcurrentBatch(supabase, students, fixture, options = {}) {
 
   console.log(`⏱️ Duration: ${totalDuration}ms | Throughput: ${throughput} ops/sec`);
   console.log(`⚡ Latency: P95 = ${p95}ms | P99 = ${p99}ms`);
-  console.log(`✅ Accepted: ${successCount} / ${numStudents} | 🔄 Replays: ${alreadyProcessedCount} | ❌ Errors: ${totalErrors}`);
+  console.log(
+    `✅ Accepted: ${successCount} / ${numStudents} | 🔄 Replays: ${alreadyProcessedCount} | ❌ Errors: ${totalErrors}`
+  );
 
   console.log(`\n## ERROR SUMMARY`);
   Object.entries(errorSummary).forEach(([k, v]) => {
@@ -295,24 +298,55 @@ async function main() {
     process.exit(0);
   }
 
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || SUPABASE_URL.includes('placeholder')) {
-    console.error(`❌ Error: Valid VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are required for live load testing.`);
+  // 1. Environment & Project URL Validation
+  let projectRef;
+  try {
+    projectRef = extractProjectRef(SUPABASE_URL);
+  } catch (err) {
+    console.error(`\n❌ Configuration Error: ${err.message}\n`);
     process.exit(1);
   }
 
-  // 1. Strict Security Check: Reject service_role key
-  validateAnonKey(SUPABASE_ANON_KEY);
+  // 2. Key Format & Security Validation (rejects service_role)
+  let keyInfo;
+  try {
+    keyInfo = validateAndInspectKey(SUPABASE_ANON_KEY, projectRef);
+  } catch (err) {
+    console.error(`\n❌ Key Validation Error: ${err.message}\n`);
+    process.exit(1);
+  }
+
+  // 3. Print Configuration
+  console.log(`\nLIVE SUPABASE CONFIGURATION`);
+  console.log(`  URL:         ${SUPABASE_URL}`);
+  console.log(`  Key type:    ${keyInfo.keyType}`);
+  console.log(`  Project ref: ${keyInfo.projectRef}`);
+  console.log(`  Environment: ${LOAD_TEST_ENV}`);
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: false },
   });
 
-  // 2. Discover Fixture Configuration
-  const fixture = await discoverCategoryAndTeachers(supabase);
-  console.log(`\n🎯 FIXTURE CONFIGURATION:`);
-  console.log(`  Category:  ${fixture.categoryId} (${fixture.categoryName})`);
-  console.log(`  Teacher A: ${fixture.teacherA.id} (${fixture.teacherA.name})`);
-  console.log(`  Teacher B: ${fixture.teacherB.id} (${fixture.teacherB.name})`);
+  // 4. Test Connectivity
+  console.log(`\n📡 Testing Supabase Connectivity...`);
+  const connResult = await testSupabaseConnection(supabase);
+  if (!connResult.connected) {
+    console.error(`\n❌ Aborting: Could not establish connection to Supabase project.`);
+    process.exit(1);
+  }
+
+  // 5. Discover Fixture Configuration
+  let fixture;
+  try {
+    fixture = await discoverCategoryAndTeachers(supabase);
+    console.log(`\n🎯 FIXTURE CONFIGURATION:`);
+    console.log(`  Category:  ${fixture.categoryId} (${fixture.categoryName})`);
+    console.log(`  Teacher A: ${fixture.teacherA.id} (${fixture.teacherA.name})`);
+    console.log(`  Teacher B: ${fixture.teacherB.id} (${fixture.teacherB.name})`);
+  } catch (err) {
+    console.error(`\n❌ Fixture Discovery Error: ${err.message}\n`);
+    process.exit(1);
+  }
 
   const report = {};
   const runPrefix = `lt_${Date.now()}`;
@@ -363,7 +397,7 @@ async function main() {
   // Final Formatted Report Output
   // ----------------------------------------------------
   console.log(`\n======================================================`);
-  console.log(`📋 FINAL REAL SUPABASE LOAD TEST REPORT`);
+  console.log(`📋 REAL SUPABASE LOAD TEST`);
   console.log(`======================================================`);
 
   console.log(`\n100 USERS`);
@@ -430,6 +464,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('Fatal Live Test Error:', err);
+  console.error('Fatal Live Test Error:', err.message || err);
   process.exit(1);
 });

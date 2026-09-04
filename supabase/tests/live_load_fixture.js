@@ -3,39 +3,154 @@
  * Live Load Test Fixture & Environment Discovery Module
  *
  * Prepares a dedicated, safe test environment:
- * 1. Validates that the Supabase key is an anon/publishable key (rejects service_role).
- * 2. Discovers real active categories & assigned nominees dynamically.
- * 3. Registers real test student sessions via register_or_get_student() RPC.
- * 4. Provides isolated, non-destructive test teardown when enabled.
+ * 1. Supports both legacy anon JWTs and modern Supabase publishable keys.
+ * 2. Strictly rejects service_role or secret keys.
+ * 3. Verifies project reference match between VITE_SUPABASE_URL and key payload.
+ * 4. Verifies database connectivity before running tests.
+ * 5. Discovers real active categories & assigned nominees dynamically.
+ * 6. Registers real test student sessions via register_or_get_student() RPC.
+ * 7. Provides isolated, non-destructive test teardown when enabled.
  */
 
 import crypto from 'crypto';
 
 /**
- * Validates that the provided Supabase key is genuinely an anon/publishable key
- * and strictly refuses execution if a service_role key is detected.
+ * Extracts the Supabase project reference from the project URL.
  */
-export function validateAnonKey(key) {
-  if (!key || typeof key !== 'string') {
-    throw new Error('Supabase anon key is missing or invalid.');
+export function extractProjectRef(url) {
+  if (!url || typeof url !== 'string' || !url.trim()) {
+    throw new Error('Supabase URL is empty. Please set VITE_SUPABASE_URL.');
   }
 
-  const parts = key.split('.');
-  if (parts.length !== 3) {
-    throw new Error('Invalid JWT format for Supabase key.');
+  const cleanUrl = url.trim();
+
+  if (
+    cleanUrl.includes('your-project') ||
+    cleanUrl.includes('your_supabase_url') ||
+    cleanUrl.includes('placeholder')
+  ) {
+    throw new Error(
+      `Supabase URL is a placeholder ("${cleanUrl}"). Please provide a valid Supabase project URL (e.g. https://your-project-ref.supabase.co).`
+    );
+  }
+
+  const match = cleanUrl.match(/https?:\/\/([a-z0-9-]+)\.supabase\.(co|in|net)/i);
+  if (match && match[1]) {
+    return match[1].toLowerCase();
   }
 
   try {
-    const payloadJson = Buffer.from(parts[1], 'base64').toString('utf-8');
-    const payload = JSON.parse(payloadJson);
+    const parsed = new URL(cleanUrl);
+    return parsed.hostname;
+  } catch {
+    throw new Error(`Invalid Supabase URL format: "${cleanUrl}".`);
+  }
+}
+
+/**
+ * Validates the Supabase key format, ensuring it is a legitimate anon/publishable key
+ * and rejecting dangerous service_role or secret keys.
+ *
+ * Supports:
+ * 1. Legacy anon JWT (e.g. eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...)
+ * 2. Modern publishable keys (e.g. sb_publishable_..., pk_...)
+ */
+export function validateAndInspectKey(key, expectedProjectRef) {
+  if (!key || typeof key !== 'string' || !key.trim()) {
+    throw new Error('Supabase key is empty. Please provide your Supabase anon/publishable key.');
+  }
+
+  const cleanKey = key.trim();
+
+  // Check for placeholder values
+  if (
+    cleanKey.includes('your-anon') ||
+    cleanKey.includes('your_supabase_anon_key') ||
+    cleanKey.includes('your_anon_key') ||
+    cleanKey.includes('placeholder')
+  ) {
+    throw new Error(
+      'Supabase key is a placeholder value. Please provide your real Supabase anon/publishable key from your Supabase Dashboard.'
+    );
+  }
+
+  // Check for dangerous secret keys
+  if (cleanKey.startsWith('sb_secret_') || cleanKey.startsWith('sk_') || cleanKey.startsWith('secret_')) {
+    throw new Error('Supabase secret key detected. Do not use secret keys for this test.');
+  }
+
+  // Check for modern publishable keys
+  if (cleanKey.startsWith('sb_publishable_') || cleanKey.startsWith('pk_')) {
+    return {
+      keyType: 'publishable',
+      projectRef: expectedProjectRef || 'unknown',
+    };
+  }
+
+  // Check for JWT format
+  if (cleanKey.startsWith('ey') || cleanKey.includes('.')) {
+    const parts = cleanKey.split('.');
+    if (parts.length !== 3) {
+      throw new Error(
+        'Unsupported or malformed Supabase key format (JWT expected 3 segments). Use the Supabase anon key.'
+      );
+    }
+
+    let payload;
+    try {
+      const payloadJson = Buffer.from(parts[1], 'base64').toString('utf-8');
+      payload = JSON.parse(payloadJson);
+    } catch {
+      throw new Error('Could not parse Supabase JWT payload.');
+    }
 
     if (payload.role === 'service_role') {
-      console.error('\n❌ REFUSING TO RUN: service_role key detected. Use the Supabase anon/publishable key.\n');
-      process.exit(1);
+      throw new Error('Supabase service_role key detected. Use the anon/publishable key.');
     }
+
+    if (payload.role && payload.role !== 'anon') {
+      throw new Error(`Supabase JWT role is "${payload.role}". Expected "anon". Use the anon key.`);
+    }
+
+    const keyRef = payload.ref ? String(payload.ref).toLowerCase() : null;
+
+    if (keyRef && expectedProjectRef && expectedProjectRef.length === 20) {
+      if (keyRef !== expectedProjectRef.toLowerCase()) {
+        throw new Error(
+          `Supabase URL and anon key belong to different projects.\n` +
+            `  URL project ref: "${expectedProjectRef}"\n` +
+            `  Key project ref: "${keyRef}"\n` +
+            `Please set both VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to the same Supabase project.`
+        );
+      }
+    }
+
+    return {
+      keyType: 'anon JWT',
+      projectRef: keyRef || expectedProjectRef || 'unknown',
+    };
+  }
+
+  throw new Error('Unsupported or malformed Supabase key format. Use the Supabase anon/publishable key.');
+}
+
+/**
+ * Validates Supabase API connectivity before beginning test execution.
+ */
+export async function testSupabaseConnection(supabase) {
+  try {
+    const { error } = await supabase.from('categories').select('id').limit(1);
+
+    if (error) {
+      console.log(`SUPABASE CONNECTION: FAIL (${error.message || 'API request rejected'})`);
+      return { connected: false, error: error.message };
+    }
+
+    console.log(`SUPABASE CONNECTION: PASS`);
+    return { connected: true };
   } catch (err) {
-    if (err.message.includes('REFUSING TO RUN')) throw err;
-    throw new Error('Could not parse Supabase JWT payload.');
+    console.log(`SUPABASE CONNECTION: FAIL (${err.message})`);
+    return { connected: false, error: err.message };
   }
 }
 
@@ -182,7 +297,6 @@ export async function cleanupTestRun(supabase, runId) {
 
   console.log(`\n🧹 Cleaning up test run ${runId}...`);
   try {
-    // Find all test sessions for this run
     const devicePattern = `dev_lt_${runId}_%`;
     const { data: testSessions } = await supabase
       .from('user_sessions')
@@ -192,7 +306,6 @@ export async function cleanupTestRun(supabase, runId) {
     if (testSessions && testSessions.length > 0) {
       const studentIds = Array.from(new Set(testSessions.map((s) => s.user_id)));
 
-      // Delete submissions
       const { data: testSubs } = await supabase
         .from('vote_submissions')
         .select('id')
@@ -204,7 +317,6 @@ export async function cleanupTestRun(supabase, runId) {
         await supabase.from('vote_submissions').delete().in('id', subIds);
       }
 
-      // Delete sessions and profiles
       await supabase.from('user_sessions').delete().like('device_id', devicePattern);
       await supabase.from('profiles').delete().in('id', studentIds);
     }

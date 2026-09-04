@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test:load": "node supabase/tests/concurrency_suite.js"
+    "test:load": "node supabase/tests/concurrency_suite.js",
+    "test:load:mock": "node supabase/tests/concurrency_suite.js",
+    "test:load:live": "node supabase/tests/live_load_test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.114.0",

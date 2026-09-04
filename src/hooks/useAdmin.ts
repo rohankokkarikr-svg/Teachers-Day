@@ -165,7 +165,7 @@ export function useAdmin() {
 
       const subPromise = supabase
         .from('vote_submissions')
-        .select('student_id');
+        .select('student_id', { count: 'exact', head: true });
 
       const catPromise = supabase
         .from('categories')
@@ -209,8 +209,9 @@ export function useAdmin() {
       const totalStudents = studentRes?.count !== undefined && studentRes?.count !== null
         ? studentRes.count
         : totalRegistered;
-      const uniqueStudents = new Set((subRes?.data || []).map((s: any) => s.student_id));
-      const totalParticipants = subRes?.data ? uniqueStudents.size : uniqueVoters;
+      const totalParticipants = subRes?.count !== undefined && subRes?.count !== null
+        ? subRes.count
+        : uniqueVoters;
       const cloudRate = totalStudents > 0 ? Math.min(100, Math.round((totalParticipants / totalStudents) * 100)) : 0;
       const totalCategories = catRes?.count || allCats.length || 7;
       const totalVotes = totalsRes?.data

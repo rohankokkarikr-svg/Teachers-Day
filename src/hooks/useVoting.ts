@@ -251,44 +251,52 @@ export function useVoting(categoryId: string, userId?: string) {
         });
 
         const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
-          setTimeout(() => reject(new Error('Submission timed out. Please check your connection.')), 9000)
+          setTimeout(() => reject(new Error('Submission timed out. Please check your connection and retry.')), 8000)
         );
 
         const { data: rpcRes, error: rpcErr } = (await Promise.race([rpcPromise, timeoutPromise])) as any;
 
         if (rpcErr) {
           console.error('submit_votes RPC Error:', rpcErr);
-          const errMsg = rpcErr.message || 'Submission failed. Please check your network and try again.';
+          // Keep pendingSubmissionIdRef for idempotent retry
+          const errMsg = rpcErr.message || 'Submission failed. Please check your network and retry.';
           return { success: false, message: errMsg };
         }
 
         if (rpcRes && rpcRes.success === false) {
-          if (rpcRes.error_code === 'DUPLICATE_SUBMISSION' || rpcRes.message?.includes('already submitted')) {
+          const errorCode = rpcRes.error_code || rpcRes.status;
+
+          if (errorCode === 'DUPLICATE_SUBMISSION' || rpcRes.message?.includes('already submitted')) {
             recordLocalVote();
             pendingSubmissionIdRef.current = null;
+            return { success: false, message: 'You have already submitted your vote for this category.' };
           }
+
+          if (errorCode === 'VOTE_LIMIT_EXCEEDED') {
+            return {
+              success: false,
+              message: `Please allocate exactly ${VOTES_PER_CATEGORY} votes before submitting.`,
+            };
+          }
+
+          if (errorCode === 'CATEGORY_NOT_FOUND' || errorCode === 'CATEGORY_INACTIVE') {
+            return { success: false, message: 'Voting is currently closed or unavailable for this category.' };
+          }
+
+          if (errorCode === 'TEACHER_NOT_FOUND' || errorCode === 'TEACHER_NOT_IN_CATEGORY') {
+            return { success: false, message: 'One or more selected teachers are not eligible for this category.' };
+          }
+
+          if (errorCode === 'ACCOUNT_REVOKED') {
+            return { success: false, message: 'Access Denied: Your account access has been restricted by the administrator.' };
+          }
+
           return { success: false, message: rpcRes.message || 'Submission was rejected by the server.' };
         }
 
         // Idempotency: Success or already_processed
-        if (rpcRes && (rpcRes.success === true || rpcRes.status === 'already_processed')) {
+        if (rpcRes && (rpcRes.success === true || rpcRes.status === 'ALREADY_PROCESSED' || rpcRes.status === 'already_processed')) {
           pendingSubmissionIdRef.current = null;
-        }
-
-        // Broadcast instant notification for live leaderboards
-        try {
-          const categoryChannel = supabase.channel(`live_results_stream_${categoryId}`);
-          categoryChannel.send({
-            type: 'broadcast',
-            event: 'vote_submitted',
-            payload: {
-              categoryId,
-              votes,
-              timestamp: Date.now(),
-            },
-          });
-        } catch {
-          // Handled gracefully
         }
       }
 
@@ -304,6 +312,7 @@ export function useVoting(categoryId: string, userId?: string) {
     } catch (err: unknown) {
       console.error('Submit votes exception:', err);
       const msg = err instanceof Error ? err.message : 'Submission failed. Please try again.';
+      // Note: pendingSubmissionIdRef remains set so user can retry safely
       return {
         success: false,
         message: msg,

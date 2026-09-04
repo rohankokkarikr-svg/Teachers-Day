@@ -142,70 +142,11 @@ export function useRealtime(categoryId?: string) {
         return;
       }
 
-      // Fallback: Query vote_totals directly if RPC is not yet installed
-      const totalsPromise = supabase
-        .from('vote_totals')
-        .select('teacher_id, total_votes')
-        .eq('category_id', currentCatId);
-
-      const [settingsRes, totalsRes] = (await Promise.all([
-        supabase.from('voting_settings').select('show_live_counts').eq('id', 1).maybeSingle(),
-        totalsPromise,
-      ])) as any;
-
-      if (settingsRes?.data) {
-        setShowLiveCounts(settingsRes.data.show_live_counts);
-      }
-
-      const allTeachers = getAllTeachers().filter((t) => t.is_active !== false);
-      const assignments = getCategoryTeacherAssignments();
-      const catAssigned = assignments[currentCatId] || getDefaultCategoryTeachers({ id: currentCatId });
-      const categoryTeachers = catAssigned && catAssigned.length > 0
-        ? allTeachers.filter((t) => new Set(catAssigned).has(t.id))
-        : allTeachers;
-
-      const votesMap: Record<string, number> = {};
-      const localTotals = getLocalStorage<Record<string, Record<string, number>>>('td_category_vote_totals', {});
-      const catLocalVotes = localTotals[currentCatId] || {};
-
-      if (totalsRes?.data && totalsRes.data.length > 0) {
-        totalsRes.data.forEach((row: any) => {
-          votesMap[row.teacher_id] = row.total_votes;
-        });
-        setLocalStorage('td_category_vote_totals', { ...localTotals, [currentCatId]: votesMap });
-      } else {
-        Object.assign(votesMap, catLocalVotes);
-      }
-
-      const entries: LeaderboardEntry[] = categoryTeachers.map((t) => ({
-        teacher_id: t.id,
-        teacher_name: t.name,
-        teacher_photo: t.photo_url || '',
-        teacher_department: t.department,
-        total_votes: votesMap[t.id] ?? 0,
-        rank: 1,
-      }));
-
-      entries.sort((a, b) => b.total_votes - a.total_votes || a.teacher_name.localeCompare(b.teacher_name));
-      const ranked = entries.map((entry, idx) => ({ ...entry, rank: idx + 1 }));
-
-      const areLeaderboardsEqual = (a: LeaderboardEntry[], b: LeaderboardEntry[]) => {
-        if (a.length !== b.length) return false;
-        for (let i = 0; i < a.length; i++) {
-          if (
-            a[i].teacher_id !== b[i].teacher_id ||
-            a[i].total_votes !== b[i].total_votes ||
-            a[i].rank !== b[i].rank
-          ) {
-            return false;
-          }
-        }
-        return true;
-      };
-
-      setLeaderboard((prev) => (areLeaderboardsEqual(prev, ranked) ? prev : ranked));
-    } catch {
+      // If RPC returned empty list or had no rows yet, use category assigned teachers with 0 votes
       setLeaderboard(getCategoryFallbackLeaderboard(currentCatId));
+    } catch {
+      // Keep previous valid leaderboard data or fallback gracefully
+      setLeaderboard((prev) => (prev.length > 0 ? prev : getCategoryFallbackLeaderboard(currentCatId)));
     } finally {
       if (!isSilent) setIsLoading(false);
     }
@@ -296,36 +237,8 @@ export function useRealtime(categoryId?: string) {
     if (!categoryId || !isSupabaseConfigured) return;
 
     const channel = supabase
-      .channel(`live_results_stream_${categoryId}`, {
-        config: {
-          broadcast: { self: false },
-        },
-      })
-      // 1. Instant optimistic broadcast updates from student devices
-      .on('broadcast', { event: 'vote_submitted' }, (payload) => {
-        const data = payload.payload as {
-          categoryId: string;
-          votes?: Record<string, number>;
-        };
-
-        if (data?.categoryId === categoryId) {
-          if (data.votes) {
-            setLeaderboard((prev) => {
-              const updated = prev.map((entry) => {
-                const added = data.votes ? data.votes[entry.teacher_id] || 0 : 0;
-                return added > 0
-                  ? { ...entry, total_votes: entry.total_votes + added }
-                  : entry;
-              });
-              return updated
-                .sort((a, b) => b.total_votes - a.total_votes || a.teacher_name.localeCompare(b.teacher_name))
-                .map((item, idx) => ({ ...item, rank: idx + 1 }));
-            });
-          }
-          scheduleDebouncedFetch();
-        }
-      })
-      // 2. Debounced PostgreSQL Realtime updates on vote_totals (filtered to this category)
+      .channel(`live_results_stream_${categoryId}`)
+      // 1. Debounced PostgreSQL Realtime updates on vote_totals (filtered to this category)
       .on(
         'postgres_changes',
         {

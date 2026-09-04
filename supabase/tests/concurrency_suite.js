@@ -1,35 +1,21 @@
 /**
  * TEACHERS' DAY LIVE VOTING & AWARDS PLATFORM 2026
- * Master Concurrency, Load & Stress Testing Suite
+ * Mock Concurrency, Load & Stress Testing Suite
  *
- * Simulates:
- * 1. 100, 250, 500, 750, 1000 concurrent students voting.
+ * Runs deterministic in-memory atomic simulation verifying:
+ * 1. 100, 250, 500, 750, 1000 concurrent students voting simultaneously.
  * 2. Hotspot contention: 500 students voting for the same teacher in the same category.
- * 3. Rapid duplicate / idempotent retries.
- * 4. Vote limit & validation enforcement.
- * 5. Database consistency & zero-loss verification.
+ * 3. Rapid duplicate / idempotent retries (same submission_id).
+ * 4. Vote limit & validation enforcement (under-allocation, over-allocation).
+ * 5. Database consistency: zero discrepancies between vote_items and vote_totals.
  */
 
-import { createClient } from '@supabase/supabase-js';
-
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://vtokjwfefespmkvnnpxz.supabase.co';
-const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0b2tqd2ZlZmVzcG1rdm5ucHh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODM2MzQ0NSwiZXhwIjoyMTAzOTM5NDQ1fQ.KV78IHAukeTW2dV8l8oAiVuvxtF3l42ZBwc8K62UnkM';
-
-const isLiveConfigured = Boolean(
-  SUPABASE_URL &&
-  SUPABASE_ANON_KEY &&
-  !SUPABASE_URL.includes('placeholder') &&
-  SUPABASE_URL.startsWith('https://')
-);
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
 const CATEGORY_ID = '11111111-0000-0000-0000-000000000001'; // Most Inspiring Teacher
-const TEACHER_A = '61ff6e22-fd00-4ce7-808e-ef632b32b4f2';    // Prof Prashant Kivati
-const TEACHER_B = '12391ff0-39c5-4943-85ba-50078dde7633';    // Prof Malikjan Bagwan
+const TEACHER_A = '61ff6e22-fd00-4ce7-808e-ef632b32b4f2';    // Nominee A
+const TEACHER_B = '12391ff0-39c5-4943-85ba-50078dde7633';    // Nominee B
 
 // ========================================================
-// 1. In-Memory Atomic Engine (for deterministic local proof & benchmark)
+// 1. In-Memory Atomic Engine (for deterministic local benchmark)
 // ========================================================
 class MockAtomicDatabase {
   constructor() {
@@ -46,7 +32,7 @@ class MockAtomicDatabase {
       return {
         success: true,
         submission_id: p_submission_id,
-        status: 'already_processed',
+        status: 'ALREADY_PROCESSED',
         message: 'Your vote has already been recorded.',
       };
     }
@@ -55,6 +41,7 @@ class MockAtomicDatabase {
     if (this.studentCategoryVotes.has(studentKey)) {
       return {
         success: false,
+        status: 'DUPLICATE_SUBMISSION',
         error_code: 'DUPLICATE_SUBMISSION',
         message: 'You have already submitted your vote for this category.',
       };
@@ -67,6 +54,7 @@ class MockAtomicDatabase {
       if (boundStudent && boundStudent !== p_student_id) {
         return {
           success: false,
+          status: 'DUPLICATE_SUBMISSION',
           error_code: 'DEVICE_ALREADY_VOTED',
           message: 'A vote has already been submitted for this category from this device.',
         };
@@ -77,7 +65,7 @@ class MockAtomicDatabase {
     let totalVotes = 0;
     for (const v of p_votes) {
       if (v.vote_count < 0) {
-        return { success: false, error_code: 'INVALID_VOTE_COUNT', message: 'Negative votes rejected.' };
+        return { success: false, error_code: 'INVALID_VOTE', message: 'Negative votes rejected.' };
       }
       totalVotes += v.vote_count;
     }
@@ -85,7 +73,7 @@ class MockAtomicDatabase {
     if (totalVotes !== 5) {
       return {
         success: false,
-        error_code: 'VOTE_LIMIT_MISMATCH',
+        error_code: 'VOTE_LIMIT_EXCEEDED',
         message: `Please allocate exactly 5 votes (got ${totalVotes}).`,
       };
     }
@@ -110,7 +98,7 @@ class MockAtomicDatabase {
     return {
       success: true,
       submission_id: subId,
-      status: 'submitted',
+      status: 'SUCCESS',
       votes_accepted: totalVotes,
     };
   }
@@ -139,7 +127,7 @@ class MockAtomicDatabase {
 // ========================================================
 // 2. Concurrency Load Test Runner
 // ========================================================
-async function runScaleTest(numStudents, mockDb = null) {
+async function runScaleTest(numStudents, mockDb) {
   console.log(`\n======================================================`);
   console.log(`🧪 SIMULATING ${numStudents} CONCURRENT STUDENTS VOTING SIMULTANEOUSLY`);
   console.log(`======================================================`);
@@ -162,32 +150,19 @@ async function runScaleTest(numStudents, mockDb = null) {
     ];
 
     try {
-      let res;
-      if (mockDb) {
-        res = mockDb.submitVotes({
-          p_category_id: CATEGORY_ID,
-          p_votes: payload,
-          p_student_id: studentId,
-          p_device_id: deviceId,
-          p_submission_id: submissionId,
-        });
-      } else {
-        const { data, error } = await supabase.rpc('submit_votes', {
-          p_category_id: CATEGORY_ID,
-          p_votes: payload,
-          p_student_id: studentId,
-          p_device_id: deviceId,
-          p_submission_id: submissionId,
-        });
-        if (error) throw error;
-        res = data;
-      }
+      const res = mockDb.submitVotes({
+        p_category_id: CATEGORY_ID,
+        p_votes: payload,
+        p_student_id: studentId,
+        p_device_id: deviceId,
+        p_submission_id: submissionId,
+      });
 
-      if (res?.success && res?.status === 'submitted') {
+      if (res?.success && (res?.status === 'SUCCESS' || res?.status === 'submitted')) {
         successCount++;
-      } else if (res?.success && res?.status === 'already_processed') {
+      } else if (res?.success && (res?.status === 'ALREADY_PROCESSED' || res?.status === 'already_processed')) {
         alreadyProcessedCount++;
-      } else if (res?.error_code === 'DUPLICATE_SUBMISSION' || res?.message?.includes('already submitted')) {
+      } else if (res?.status === 'DUPLICATE_SUBMISSION' || res?.error_code === 'DUPLICATE_SUBMISSION') {
         duplicateRejectedCount++;
       } else {
         errorCount++;
@@ -215,7 +190,7 @@ async function runScaleTest(numStudents, mockDb = null) {
 // ========================================================
 // 3. Hotspot Contention Test (500 Students -> Same Teacher)
 // ========================================================
-async function runHotspotContentionTest(numStudents = 500, mockDb = null) {
+async function runHotspotContentionTest(numStudents = 500, mockDb) {
   console.log(`\n======================================================`);
   console.log(`🔥 HOTSPOT CONTENTION TEST: ${numStudents} CONCURRENT STUDENTS ON 1 TEACHER`);
   console.log(`======================================================`);
@@ -235,28 +210,15 @@ async function runHotspotContentionTest(numStudents = 500, mockDb = null) {
     ];
 
     try {
-      let res;
-      if (mockDb) {
-        res = mockDb.submitVotes({
-          p_category_id: CATEGORY_ID,
-          p_votes: payload,
-          p_student_id: studentId,
-          p_device_id: deviceId,
-          p_submission_id: submissionId,
-        });
-      } else {
-        const { data, error } = await supabase.rpc('submit_votes', {
-          p_category_id: CATEGORY_ID,
-          p_votes: payload,
-          p_student_id: studentId,
-          p_device_id: deviceId,
-          p_submission_id: submissionId,
-        });
-        if (error) throw error;
-        res = data;
-      }
+      const res = mockDb.submitVotes({
+        p_category_id: CATEGORY_ID,
+        p_votes: payload,
+        p_student_id: studentId,
+        p_device_id: deviceId,
+        p_submission_id: submissionId,
+      });
 
-      if (res?.success && res?.status === 'submitted') {
+      if (res?.success && (res?.status === 'SUCCESS' || res?.status === 'submitted')) {
         successCount++;
       } else {
         errorCount++;
@@ -282,7 +244,7 @@ async function runHotspotContentionTest(numStudents = 500, mockDb = null) {
 // ========================================================
 // 4. Duplicate / Idempotency & Constraint Violation Test
 // ========================================================
-async function runIdempotencyAndConstraintTest(mockDb = null) {
+async function runIdempotencyAndConstraintTest(mockDb) {
   console.log(`\n======================================================`);
   console.log(`🛡️ IDEMPOTENCY & CONSTRAINT VIOLATION TESTS`);
   console.log(`======================================================`);
@@ -293,103 +255,65 @@ async function runIdempotencyAndConstraintTest(mockDb = null) {
   const fixedSubmissionId = 'fixed_sub_uuid_000000000001';
 
   // Test 1: First valid submission
-  const res1 = mockDb
-    ? mockDb.submitVotes({
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 5 }],
-        p_student_id: testStudentId,
-        p_device_id: testDeviceId,
-        p_submission_id: fixedSubmissionId,
-      })
-    : (await supabase.rpc('submit_votes', {
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 5 }],
-        p_student_id: testStudentId,
-        p_device_id: testDeviceId,
-        p_submission_id: fixedSubmissionId,
-      })).data;
+  const res1 = mockDb.submitVotes({
+    p_category_id: CATEGORY_ID,
+    p_votes: [{ teacher_id: TEACHER_A, vote_count: 5 }],
+    p_student_id: testStudentId,
+    p_device_id: testDeviceId,
+    p_submission_id: fixedSubmissionId,
+  });
 
-  const test1Pass = res1?.success === true && res1?.status === 'submitted';
+  const test1Pass = res1?.success === true && (res1?.status === 'SUCCESS' || res1?.status === 'submitted');
   console.log(`1. Initial Submission: ${test1Pass ? '✅ PASS' : '❌ FAIL'}`);
   if (!test1Pass) allPassed = false;
 
   // Test 2: Rapid retry with exact SAME submission_id (Idempotent Request)
-  const res2 = mockDb
-    ? mockDb.submitVotes({
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 5 }],
-        p_student_id: testStudentId,
-        p_device_id: testDeviceId,
-        p_submission_id: fixedSubmissionId,
-      })
-    : (await supabase.rpc('submit_votes', {
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 5 }],
-        p_student_id: testStudentId,
-        p_device_id: testDeviceId,
-        p_submission_id: fixedSubmissionId,
-      })).data;
+  const res2 = mockDb.submitVotes({
+    p_category_id: CATEGORY_ID,
+    p_votes: [{ teacher_id: TEACHER_A, vote_count: 5 }],
+    p_student_id: testStudentId,
+    p_device_id: testDeviceId,
+    p_submission_id: fixedSubmissionId,
+  });
 
-  const test2Pass = res2?.success === true && res2?.status === 'already_processed';
+  const test2Pass = res2?.success === true && (res2?.status === 'ALREADY_PROCESSED' || res2?.status === 'already_processed');
   console.log(`2. Idempotent Retry (Same submission_id): ${test2Pass ? '✅ PASS' : '❌ FAIL'}`);
   if (!test2Pass) allPassed = false;
 
   // Test 3: Duplicate vote attempt with NEW submission_id (Duplicate Submission)
-  const res3 = mockDb
-    ? mockDb.submitVotes({
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 5 }],
-        p_student_id: testStudentId,
-        p_device_id: testDeviceId,
-        p_submission_id: 'new_sub_uuid_000000000002',
-      })
-    : (await supabase.rpc('submit_votes', {
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 5 }],
-        p_student_id: testStudentId,
-        p_device_id: testDeviceId,
-        p_submission_id: 'new_sub_uuid_000000000002',
-      })).data;
+  const res3 = mockDb.submitVotes({
+    p_category_id: CATEGORY_ID,
+    p_votes: [{ teacher_id: TEACHER_A, vote_count: 5 }],
+    p_student_id: testStudentId,
+    p_device_id: testDeviceId,
+    p_submission_id: 'new_sub_uuid_000000000002',
+  });
 
-  const test3Pass = res3?.success === false && (res3?.error_code === 'DUPLICATE_SUBMISSION' || res3?.message?.includes('already submitted'));
+  const test3Pass = res3?.success === false && (res3?.status === 'DUPLICATE_SUBMISSION' || res3?.error_code === 'DUPLICATE_SUBMISSION');
   console.log(`3. Duplicate Ballot Blocked: ${test3Pass ? '✅ PASS' : '❌ FAIL'}`);
   if (!test3Pass) allPassed = false;
 
   // Test 4: Invalid vote count (4 votes instead of 5)
-  const res4 = mockDb
-    ? mockDb.submitVotes({
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 4 }],
-        p_student_id: 'fresh_student_002',
-        p_device_id: 'fresh_device_002',
-      })
-    : (await supabase.rpc('submit_votes', {
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 4 }],
-        p_student_id: 'fresh_student_002',
-        p_device_id: 'fresh_device_002',
-      })).data;
+  const res4 = mockDb.submitVotes({
+    p_category_id: CATEGORY_ID,
+    p_votes: [{ teacher_id: TEACHER_A, vote_count: 4 }],
+    p_student_id: 'fresh_student_002',
+    p_device_id: 'fresh_device_002',
+  });
 
-  const test4Pass = res4?.success === false && (res4?.error_code === 'VOTE_LIMIT_MISMATCH' || res4?.message?.includes('allocate exactly 5 votes'));
+  const test4Pass = res4?.success === false && res4?.error_code === 'VOTE_LIMIT_EXCEEDED';
   console.log(`4. Under-allocation Blocked (4 votes): ${test4Pass ? '✅ PASS' : '❌ FAIL'}`);
   if (!test4Pass) allPassed = false;
 
   // Test 5: Over-allocation (6 votes instead of 5)
-  const res5 = mockDb
-    ? mockDb.submitVotes({
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 6 }],
-        p_student_id: 'fresh_student_003',
-        p_device_id: 'fresh_device_003',
-      })
-    : (await supabase.rpc('submit_votes', {
-        p_category_id: CATEGORY_ID,
-        p_votes: [{ teacher_id: TEACHER_A, vote_count: 6 }],
-        p_student_id: 'fresh_student_003',
-        p_device_id: 'fresh_device_003',
-      })).data;
+  const res5 = mockDb.submitVotes({
+    p_category_id: CATEGORY_ID,
+    p_votes: [{ teacher_id: TEACHER_A, vote_count: 6 }],
+    p_student_id: 'fresh_student_003',
+    p_device_id: 'fresh_device_003',
+  });
 
-  const test5Pass = res5?.success === false && (res5?.error_code === 'VOTE_LIMIT_MISMATCH' || res5?.message?.includes('allocate exactly 5 votes'));
+  const test5Pass = res5?.success === false && res5?.error_code === 'VOTE_LIMIT_EXCEEDED';
   console.log(`5. Over-allocation Blocked (6 votes): ${test5Pass ? '✅ PASS' : '❌ FAIL'}`);
   if (!test5Pass) allPassed = false;
 
@@ -402,7 +326,7 @@ async function runIdempotencyAndConstraintTest(mockDb = null) {
 // ========================================================
 async function main() {
   console.log(`\n======================================================`);
-  console.log(`🚀 TEACHERS' DAY AWARDS PLATFORM: CONCURRENCY & STRESS SUITE`);
+  console.log(`🚀 TEACHERS' DAY AWARDS PLATFORM: MOCK CONCURRENCY SUITE`);
   console.log(`======================================================`);
 
   const mockDb = new MockAtomicDatabase();
@@ -427,7 +351,7 @@ async function main() {
   results['database_consistency'] = consistency.isConsistent;
 
   console.log(`\n======================================================`);
-  console.log(`📋 FINAL CONCURRENCY & STRESS TEST SUMMARY`);
+  console.log(`📋 MOCK CONCURRENCY & STRESS TEST SUMMARY`);
   console.log(`======================================================`);
   console.log(`• 100 Concurrent Users:            ${results['100_users'] ? '✅ PASS' : '❌ FAIL'}`);
   console.log(`• 250 Concurrent Users:            ${results['250_users'] ? '✅ PASS' : '❌ FAIL'}`);

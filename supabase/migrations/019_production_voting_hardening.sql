@@ -148,7 +148,7 @@ BEGIN
   END IF;
 
   -- ------------------------------------------------------
-  -- 2. Resolve & Validate Student Identity
+  -- 2. Resolve & Strictly Validate Student Identity & Active Session
   -- ------------------------------------------------------
   v_student_id := COALESCE(auth.uid(), p_student_id);
 
@@ -160,10 +160,27 @@ BEGIN
     );
   END IF;
 
+  -- Validate that an active student session exists for this user_id and device_id
+  IF NOT EXISTS (
+    SELECT 1 FROM public.user_sessions
+    WHERE user_id = v_student_id::text
+      AND (p_device_id IS NOT NULL AND p_device_id <> '' AND device_id = p_device_id)
+      AND is_active = true
+  ) THEN
+    -- If caller is authenticated admin / service role, allow bypass; otherwise reject invalid session
+    IF NOT (public.is_admin() OR auth.role() = 'service_role') THEN
+      RETURN jsonb_build_object(
+        'success', false,
+        'error_code', 'INVALID_SESSION',
+        'message', 'Active student session required.'
+      );
+    END IF;
+  END IF;
+
   -- Check if student or session was revoked by administrator
   SELECT EXISTS (
     SELECT 1 FROM public.user_sessions
-    WHERE (user_id = v_student_id OR (p_device_id IS NOT NULL AND p_device_id <> '' AND device_id = p_device_id))
+    WHERE (user_id = v_student_id::text OR (p_device_id IS NOT NULL AND p_device_id <> '' AND device_id = p_device_id))
       AND is_active = false
   ) INTO v_is_revoked;
 

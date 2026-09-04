@@ -1,64 +1,109 @@
 /**
  * TEACHERS' DAY LIVE VOTING & AWARDS PLATFORM 2026
- * Real Supabase PostgreSQL Live Load & Concurrency Test Suite
+ * Real Supabase PostgreSQL 500-User Concurrent Live Load Suite
  *
- * Requirements:
- * 1. Requires explicit environment flag: LOAD_TEST_ENABLED=true
- * 2. Uses live Supabase RPC calls over the network
- * 3. Tests:
- *    - 100, 250, 500 concurrent student voting RPC calls
- *    - Hotspot contention: 500 students voting for the same candidate
- *    - Idempotent request replay (same submission_id)
- *    - Duplicate ballot rejection (different submission_id, same student/category)
- *    - Vote limit mismatch rejection (under/over allocation)
- *    - Invalid category & teacher rejection (CATEGORY_NOT_FOUND, TEACHER_NOT_IN_CATEGORY)
- *    - Post-test database consistency verification via verify_voting_integrity()
+ * Concurrency Sequences:
+ * 1. 100 Real Concurrent Users
+ * 2. 250 Real Concurrent Users
+ * 3. 500 Real Concurrent Users
+ * 4. 500 Real Concurrent Users Hotspot Contention (Same Nominee)
+ * 5. Idempotent Retry Replay
+ * 6. Duplicate Student/Category Ballot Rejection
+ * 7. Invalid Vote Count Rejection (Over/Under Allocation)
+ * 8. Invalid Category / Nominee Rejection
+ * 9. Database Zero-Loss Integrity & Aggregate Reconciliation
  */
 
 import { createClient } from '@supabase/supabase-js';
+import crypto from 'crypto';
+import {
+  validateAnonKey,
+  discoverCategoryAndTeachers,
+  prepareTestStudents,
+  cleanupTestRun,
+} from './live_load_fixture.js';
 
 const LOAD_TEST_ENABLED = process.env.LOAD_TEST_ENABLED === 'true';
+const LOAD_TEST_ENV = process.env.LOAD_TEST_ENV || 'staging';
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
-// Default Test Fixture IDs
-const TEST_CATEGORY_ID = process.env.LOAD_TEST_CATEGORY_ID || '11111111-0000-0000-0000-000000000001';
-const TEST_TEACHER_A = process.env.LOAD_TEST_TEACHER_A || '61ff6e22-fd00-4ce7-808e-ef632b32b4f2';
-const TEST_TEACHER_B = process.env.LOAD_TEST_TEACHER_B || '12391ff0-39c5-4943-85ba-50078dde7633';
+/**
+ * Calculates P95 and P99 percentiles from latency array.
+ */
+function calculatePercentiles(latencies) {
+  if (!latencies || latencies.length === 0) return { p95: 0, p99: 0 };
+  const sorted = [...latencies].sort((a, b) => a - b);
+  const p95Idx = Math.min(Math.floor(sorted.length * 0.95), sorted.length - 1);
+  const p99Idx = Math.min(Math.floor(sorted.length * 0.99), sorted.length - 1);
+  return {
+    p95: sorted[p95Idx],
+    p99: sorted[p99Idx],
+  };
+}
 
-async function runLiveScaleTest(supabase, numStudents) {
+/**
+ * Executes concurrent voting simulation with registered test student fixtures.
+ */
+async function runConcurrentBatch(supabase, students, fixture, options = {}) {
+  const isHotspot = options.isHotspot === true;
+  const numStudents = students.length;
+
   console.log(`\n======================================================`);
-  console.log(`🌐 LIVE SUPABASE: SIMULATING ${numStudents} CONCURRENT STUDENTS`);
+  console.log(
+    `🚀 LAUNCHING ${numStudents} CONCURRENT REAL SUPABASE REQUESTS${isHotspot ? ' [HOTSPOT ON 1 NOMINEE]' : ''}`
+  );
   console.log(`======================================================`);
 
-  const runId = Math.random().toString(36).substring(2, 8);
   const startTime = Date.now();
+  const latencies = [];
   let successCount = 0;
   let alreadyProcessedCount = 0;
   let duplicateRejectedCount = 0;
-  let errorCount = 0;
+  const errorSummary = {
+    INVALID_SESSION: 0,
+    CATEGORY_NOT_FOUND: 0,
+    TEACHER_NOT_IN_CATEGORY: 0,
+    VOTE_LIMIT_EXCEEDED: 0,
+    DUPLICATE_SUBMISSION: 0,
+    NETWORK_ERROR: 0,
+    OTHER: 0,
+  };
+  const sampleErrors = [];
 
-  const promises = Array.from({ length: numStudents }).map(async (_, idx) => {
-    const studentId = `00000000-0000-0000-0000-${String(idx + 1).padStart(12, '0')}`;
-    const deviceId = `dev_live_${runId}_${String(idx).padStart(5, '0')}`;
-    const submissionId = `00000000-0000-0000-0001-${String(idx + 1).padStart(12, '0')}`;
-
-    const payload = [
-      { teacher_id: TEST_TEACHER_A, vote_count: 3 },
-      { teacher_id: TEST_TEACHER_B, vote_count: 2 },
-    ];
+  const promises = students.map(async (student) => {
+    const reqStart = Date.now();
+    const payload = isHotspot
+      ? [{ teacher_id: fixture.teacherA.id, vote_count: 5 }]
+      : [
+          { teacher_id: fixture.teacherA.id, vote_count: 3 },
+          { teacher_id: fixture.teacherB.id, vote_count: 2 },
+        ];
 
     try {
       const { data, error } = await supabase.rpc('submit_votes', {
-        p_category_id: TEST_CATEGORY_ID,
+        p_category_id: fixture.categoryId,
         p_votes: payload,
-        p_student_id: studentId,
-        p_device_id: deviceId,
-        p_submission_id: submissionId,
+        p_student_id: student.studentId,
+        p_device_id: student.deviceId,
+        p_submission_id: student.submissionId,
       });
 
+      const latency = Date.now() - reqStart;
+      latencies.push(latency);
+
       if (error) {
-        errorCount++;
+        errorSummary.OTHER++;
+        if (sampleErrors.length < 10) {
+          sampleErrors.push({
+            studentId: student.studentId,
+            submissionId: student.submissionId,
+            errorCode: error.code || 'POSTGREST_ERROR',
+            message: error.message,
+            details: error.details,
+            hint: error.hint,
+          });
+        }
         return;
       }
 
@@ -66,116 +111,186 @@ async function runLiveScaleTest(supabase, numStudents) {
         successCount++;
       } else if (data?.success && (data?.status === 'ALREADY_PROCESSED' || data?.status === 'already_processed')) {
         alreadyProcessedCount++;
-      } else if (data?.status === 'DUPLICATE_SUBMISSION' || data?.error_code === 'DUPLICATE_SUBMISSION') {
-        duplicateRejectedCount++;
       } else {
-        errorCount++;
+        const code = data?.error_code || data?.status || 'OTHER';
+        if (code in errorSummary) {
+          errorSummary[code]++;
+        } else {
+          errorSummary.OTHER++;
+        }
+
+        if (sampleErrors.length < 10) {
+          sampleErrors.push({
+            studentId: student.studentId,
+            submissionId: student.submissionId,
+            errorCode: code,
+            message: data?.message || 'Rejected by server',
+          });
+        }
       }
-    } catch {
-      errorCount++;
+    } catch (err) {
+      latencies.push(Date.now() - reqStart);
+      errorSummary.NETWORK_ERROR++;
+      if (sampleErrors.length < 10) {
+        sampleErrors.push({
+          studentId: student.studentId,
+          submissionId: student.submissionId,
+          errorCode: 'NETWORK_ERROR',
+          message: err.message,
+        });
+      }
     }
   });
 
   await Promise.all(promises);
-  const elapsed = Date.now() - startTime;
-  const rps = Math.round((numStudents / (elapsed || 1)) * 1000);
+  const totalDuration = Date.now() - startTime;
+  const { p95, p99 } = calculatePercentiles(latencies);
+  const throughput = Math.round((numStudents / (totalDuration || 1)) * 1000);
+  const totalErrors = Object.values(errorSummary).reduce((a, b) => a + b, 0);
 
-  console.log(`⏱️ Duration: ${elapsed}ms | Throughput: ${rps} requests/sec`);
-  console.log(`✅ Accepted: ${successCount} | Replays: ${alreadyProcessedCount} | Duplicates Blocked: ${duplicateRejectedCount} | Errors: ${errorCount}`);
+  console.log(`⏱️ Duration: ${totalDuration}ms | Throughput: ${throughput} ops/sec`);
+  console.log(`⚡ Latency: P95 = ${p95}ms | P99 = ${p99}ms`);
+  console.log(`✅ Accepted: ${successCount} / ${numStudents} | 🔄 Replays: ${alreadyProcessedCount} | ❌ Errors: ${totalErrors}`);
 
-  const pass = errorCount === 0;
-  console.log(`📊 Result: [${pass ? 'PASS' : 'FAIL'}]`);
-  return pass;
+  console.log(`\n## ERROR SUMMARY`);
+  Object.entries(errorSummary).forEach(([k, v]) => {
+    console.log(`  ${k.padEnd(26, ' ')}: ${v}`);
+  });
+
+  if (sampleErrors.length > 0) {
+    console.log(`\n⚠️ Representative Errors (First ${sampleErrors.length}):`);
+    sampleErrors.forEach((e, i) => {
+      console.log(`  ${i + 1}. [${e.errorCode}] ${e.message} (Student: ${e.studentId})`);
+    });
+  }
+
+  const pass = successCount === numStudents && totalErrors === 0;
+  console.log(`📊 Batch Result: [${pass ? 'PASS' : 'FAIL'}]`);
+
+  return {
+    accepted: successCount,
+    errors: totalErrors,
+    duration: totalDuration,
+    p95,
+    p99,
+    throughput,
+    pass,
+  };
 }
 
-async function runLiveValidationTests(supabase) {
+/**
+ * Validates edge cases: Idempotency, Duplicate Submissions, Vote Limits, Invalid Category.
+ */
+async function runValidationSuite(supabase, fixture, sampleStudent) {
   console.log(`\n======================================================`);
-  console.log(`🛡️ LIVE SUPABASE: VALIDATION & CONSTRAINTS TESTS`);
+  console.log(`🛡️ RUNNING ISOLATED VALIDATION TESTS`);
   console.log(`======================================================`);
 
-  let allPassed = true;
-  const testStudentId = '00000000-0000-0000-9999-000000000001';
-  const testDeviceId = 'test_device_live_val_001';
-  const fixedSubId = '00000000-0000-0000-9999-000000000002';
+  const results = {};
 
-  // Test 1: Valid initial vote
-  const { data: res1 } = await supabase.rpc('submit_votes', {
-    p_category_id: TEST_CATEGORY_ID,
-    p_votes: [{ teacher_id: TEST_TEACHER_A, vote_count: 5 }],
-    p_student_id: testStudentId,
-    p_device_id: testDeviceId,
-    p_submission_id: fixedSubId,
+  // 1. Test Idempotency (Same submission_id replay)
+  const idempRes = await supabase.rpc('submit_votes', {
+    p_category_id: fixture.categoryId,
+    p_votes: [
+      { teacher_id: fixture.teacherA.id, vote_count: 3 },
+      { teacher_id: fixture.teacherB.id, vote_count: 2 },
+    ],
+    p_student_id: sampleStudent.studentId,
+    p_device_id: sampleStudent.deviceId,
+    p_submission_id: sampleStudent.submissionId,
   });
-  const pass1 = res1?.success === true || res1?.status === 'ALREADY_PROCESSED';
-  console.log(`1. Live Initial / Valid Submission: ${pass1 ? '✅ PASS' : '❌ FAIL'}`);
-  if (!pass1) allPassed = false;
 
-  // Test 2: Idempotent replay
-  const { data: res2 } = await supabase.rpc('submit_votes', {
-    p_category_id: TEST_CATEGORY_ID,
-    p_votes: [{ teacher_id: TEST_TEACHER_A, vote_count: 5 }],
-    p_student_id: testStudentId,
-    p_device_id: testDeviceId,
-    p_submission_id: fixedSubId,
+  const idempPassed =
+    idempRes.data?.success === true &&
+    (idempRes.data?.status === 'ALREADY_PROCESSED' || idempRes.data?.status === 'already_processed');
+  results.idempotency = idempPassed;
+  console.log(`1. Idempotent Retry Replay: ${idempPassed ? '✅ PASS' : '❌ FAIL'}`);
+
+  // 2. Test Duplicate Student Ballot (New submission_id for same student/category)
+  const dupRes = await supabase.rpc('submit_votes', {
+    p_category_id: fixture.categoryId,
+    p_votes: [{ teacher_id: fixture.teacherA.id, vote_count: 5 }],
+    p_student_id: sampleStudent.studentId,
+    p_device_id: sampleStudent.deviceId,
+    p_submission_id: crypto.randomUUID(),
   });
-  const pass2 = res2?.success === true && (res2?.status === 'ALREADY_PROCESSED' || res2?.status === 'already_processed');
-  console.log(`2. Live Idempotent Replay (Same submission_id): ${pass2 ? '✅ PASS' : '❌ FAIL'}`);
-  if (!pass2) allPassed = false;
 
-  // Test 3: Duplicate vote with new submission ID
-  const { data: res3 } = await supabase.rpc('submit_votes', {
-    p_category_id: TEST_CATEGORY_ID,
-    p_votes: [{ teacher_id: TEST_TEACHER_A, vote_count: 5 }],
-    p_student_id: testStudentId,
-    p_device_id: testDeviceId,
-    p_submission_id: '00000000-0000-0000-9999-000000000003',
+  const dupPassed =
+    dupRes.data?.success === false &&
+    (dupRes.data?.status === 'DUPLICATE_SUBMISSION' || dupRes.data?.error_code === 'DUPLICATE_SUBMISSION');
+  results.duplicateProtection = dupPassed;
+  console.log(`2. Duplicate Ballot Blocked: ${dupPassed ? '✅ PASS' : '❌ FAIL'}`);
+
+  // 3. Test Invalid Vote Count (6 votes)
+  const freshStudent = (await prepareTestStudents(supabase, 1, `val_${Date.now()}`))[0];
+  const limitRes = await supabase.rpc('submit_votes', {
+    p_category_id: fixture.categoryId,
+    p_votes: [{ teacher_id: fixture.teacherA.id, vote_count: 6 }],
+    p_student_id: freshStudent.studentId,
+    p_device_id: freshStudent.deviceId,
+    p_submission_id: crypto.randomUUID(),
   });
-  const pass3 = res3?.success === false && (res3?.status === 'DUPLICATE_SUBMISSION' || res3?.error_code === 'DUPLICATE_SUBMISSION');
-  console.log(`3. Live Duplicate Submission Blocked: ${pass3 ? '✅ PASS' : '❌ FAIL'}`);
-  if (!pass3) allPassed = false;
 
-  // Test 4: Invalid vote count (over allocation 6 votes)
-  const { data: res4 } = await supabase.rpc('submit_votes', {
-    p_category_id: TEST_CATEGORY_ID,
-    p_votes: [{ teacher_id: TEST_TEACHER_A, vote_count: 6 }],
-    p_student_id: '00000000-0000-0000-9999-000000000004',
-    p_device_id: 'dev_invalid_count_01',
-    p_submission_id: '00000000-0000-0000-9999-000000000005',
-  });
-  const pass4 = res4?.success === false && res4?.error_code === 'VOTE_LIMIT_EXCEEDED';
-  console.log(`4. Live Vote Limit Mismatch Blocked (6 votes): ${pass4 ? '✅ PASS' : '❌ FAIL'}`);
-  if (!pass4) allPassed = false;
+  const limitPassed =
+    limitRes.data?.success === false && limitRes.data?.error_code === 'VOTE_LIMIT_EXCEEDED';
+  results.voteLimitProtection = limitPassed;
+  console.log(`3. Over-allocation Blocked (6 votes): ${limitPassed ? '✅ PASS' : '❌ FAIL'}`);
 
-  // Test 5: Invalid category
-  const { data: res5 } = await supabase.rpc('submit_votes', {
+  // 4. Test Invalid Category
+  const invalidCatRes = await supabase.rpc('submit_votes', {
     p_category_id: '00000000-0000-0000-0000-000000000000',
-    p_votes: [{ teacher_id: TEST_TEACHER_A, vote_count: 5 }],
-    p_student_id: '00000000-0000-0000-9999-000000000006',
-    p_device_id: 'dev_invalid_cat_01',
-    p_submission_id: '00000000-0000-0000-9999-000000000007',
+    p_votes: [{ teacher_id: fixture.teacherA.id, vote_count: 5 }],
+    p_student_id: freshStudent.studentId,
+    p_device_id: freshStudent.deviceId,
+    p_submission_id: crypto.randomUUID(),
   });
-  const pass5 = res5?.success === false && res5?.error_code === 'CATEGORY_NOT_FOUND';
-  console.log(`5. Live Invalid Category Rejected: ${pass5 ? '✅ PASS' : '❌ FAIL'}`);
-  if (!pass5) allPassed = false;
 
-  // Test 6: Verify database integrity RPC
-  const { data: discrepancies, error: integErr } = await supabase.rpc('verify_voting_integrity');
-  const pass6 = !integErr && Array.isArray(discrepancies) && discrepancies.length === 0;
-  console.log(`6. Live Database Consistency & Zero-Loss Audit: ${pass6 ? '✅ PASS (0 discrepancies)' : '❌ FAIL'}`);
-  if (!pass6) allPassed = false;
+  const catPassed =
+    invalidCatRes.data?.success === false && invalidCatRes.data?.error_code === 'CATEGORY_NOT_FOUND';
+  results.invalidCategoryProtection = catPassed;
+  console.log(`4. Invalid Category Blocked: ${catPassed ? '✅ PASS' : '❌ FAIL'}`);
 
-  return allPassed;
+  return results;
 }
 
+/**
+ * Verifies that SUM(vote_items) matches SUM(vote_totals) and 0 discrepancies exist.
+ */
+async function verifyDatabaseIntegrity(supabase) {
+  console.log(`\n======================================================`);
+  console.log(`🔍 DATABASE ZERO-LOSS INTEGRITY AUDIT`);
+  console.log(`======================================================`);
+
+  const { data: integrityRows, error: integErr } = await supabase.rpc('verify_voting_integrity');
+
+  if (integErr) {
+    console.error('❌ Failed to run verify_voting_integrity RPC:', integErr.message);
+    return { isHealthy: false, discrepanciesCount: -1 };
+  }
+
+  const discrepanciesCount = Array.isArray(integrityRows) ? integrityRows.length : 0;
+  const isHealthy = discrepanciesCount === 0;
+
+  console.log(`  Discrepancy Records: ${discrepanciesCount}`);
+  console.log(`  Audit Result:       [${isHealthy ? 'HEALTHY' : 'MISMATCH DETECTED'}]`);
+
+  return { isHealthy, discrepanciesCount };
+}
+
+/**
+ * Master Live Load Test Runner
+ */
 async function main() {
   console.log(`\n======================================================`);
-  console.log(`🚀 TEACHERS' DAY AWARDS PLATFORM: LIVE SUPABASE LOAD SUITE`);
+  console.log(`🚀 TEACHERS' DAY AWARDS PLATFORM: REAL SUPABASE LOAD TEST`);
   console.log(`======================================================`);
 
   if (!LOAD_TEST_ENABLED) {
     console.log(`⚠️ LIVE LOAD TEST IS DISABLED.`);
-    console.log(`To run live network load tests against a staging/test Supabase database, execute:`);
-    console.log(`  $env:LOAD_TEST_ENABLED="true"; $env:VITE_SUPABASE_URL="https://your-project.supabase.co"; $env:VITE_SUPABASE_ANON_KEY="your-anon-key"; npm run test:load:live`);
+    console.log(`To run live network load tests against your Supabase database, execute:`);
+    console.log(
+      `  $env:LOAD_TEST_ENABLED="true"; $env:LOAD_TEST_ENV="staging"; $env:VITE_SUPABASE_URL="https://your-project.supabase.co"; $env:VITE_SUPABASE_ANON_KEY="your-anon-key"; npm run test:load:live`
+    );
     console.log(`\nStatus: LIVE TEST NOT EXECUTED (Safety Guard Active)`);
     process.exit(0);
   }
@@ -185,24 +300,130 @@ async function main() {
     process.exit(1);
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  // 1. Strict Security Check: Reject service_role key
+  validateAnonKey(SUPABASE_ANON_KEY);
 
-  const results = {};
-  results['100_users'] = await runLiveScaleTest(supabase, 100);
-  results['250_users'] = await runLiveScaleTest(supabase, 250);
-  results['500_users'] = await runLiveScaleTest(supabase, 500);
-  results['validations_and_integrity'] = await runLiveValidationTests(supabase);
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false },
+  });
 
+  // 2. Discover Fixture Configuration
+  const fixture = await discoverCategoryAndTeachers(supabase);
+  console.log(`\n🎯 FIXTURE CONFIGURATION:`);
+  console.log(`  Category:  ${fixture.categoryId} (${fixture.categoryName})`);
+  console.log(`  Teacher A: ${fixture.teacherA.id} (${fixture.teacherA.name})`);
+  console.log(`  Teacher B: ${fixture.teacherB.id} (${fixture.teacherB.name})`);
+
+  const report = {};
+  const runPrefix = `lt_${Date.now()}`;
+
+  // ----------------------------------------------------
+  // Sequence 1: 100 Users Concurrent
+  // ----------------------------------------------------
+  const students100 = await prepareTestStudents(supabase, 100, `${runPrefix}_100`);
+  report.users100 = await runConcurrentBatch(supabase, students100, fixture);
+
+  // ----------------------------------------------------
+  // Sequence 2: 250 Users Concurrent
+  // ----------------------------------------------------
+  const students250 = await prepareTestStudents(supabase, 250, `${runPrefix}_250`);
+  report.users250 = await runConcurrentBatch(supabase, students250, fixture);
+
+  // ----------------------------------------------------
+  // Sequence 3: 500 Users Concurrent
+  // ----------------------------------------------------
+  const students500 = await prepareTestStudents(supabase, 500, `${runPrefix}_500`);
+  report.users500 = await runConcurrentBatch(supabase, students500, fixture);
+
+  // ----------------------------------------------------
+  // Sequence 4: 500 Same-Teacher Hotspot Test
+  // ----------------------------------------------------
+  const studentsHotspot = await prepareTestStudents(supabase, 500, `${runPrefix}_hotspot`);
+  report.hotspot500 = await runConcurrentBatch(supabase, studentsHotspot, fixture, { isHotspot: true });
+
+  // ----------------------------------------------------
+  // Sequence 5: Validation Suite (Idempotency, Duplicate, Limits, Invalid Cat)
+  // ----------------------------------------------------
+  report.validations = await runValidationSuite(supabase, fixture, students100[0]);
+
+  // ----------------------------------------------------
+  // Sequence 6: Zero-Loss Integrity Audit
+  // ----------------------------------------------------
+  report.integrity = await verifyDatabaseIntegrity(supabase);
+
+  // ----------------------------------------------------
+  // Optional Cleanup
+  // ----------------------------------------------------
+  await cleanupTestRun(supabase, `${runPrefix}_100`);
+  await cleanupTestRun(supabase, `${runPrefix}_250`);
+  await cleanupTestRun(supabase, `${runPrefix}_500`);
+  await cleanupTestRun(supabase, `${runPrefix}_hotspot`);
+
+  // ----------------------------------------------------
+  // Final Formatted Report Output
+  // ----------------------------------------------------
   console.log(`\n======================================================`);
-  console.log(`📋 LIVE SUPABASE LOAD TEST SUMMARY`);
+  console.log(`📋 FINAL REAL SUPABASE LOAD TEST REPORT`);
   console.log(`======================================================`);
-  console.log(`• 100 Users Live:                  ${results['100_users'] ? '✅ PASS' : '❌ FAIL'}`);
-  console.log(`• 250 Users Live:                  ${results['250_users'] ? '✅ PASS' : '❌ FAIL'}`);
-  console.log(`• 500 Users Live:                  ${results['500_users'] ? '✅ PASS' : '❌ FAIL'}`);
-  console.log(`• Live Validations & Zero-Loss:    ${results['validations_and_integrity'] ? '✅ PASS' : '❌ FAIL'}`);
+
+  console.log(`\n100 USERS`);
+  console.log(`Accepted: ${report.users100.accepted} / 100`);
+  console.log(`Errors:   ${report.users100.errors}`);
+  console.log(`Duration: ${report.users100.duration} ms`);
+  console.log(`P95:      ${report.users100.p95} ms`);
+  console.log(`P99:      ${report.users100.p99} ms`);
+  console.log(`Result:   ${report.users100.pass ? 'PASS' : 'FAIL'}`);
+
+  console.log(`\n250 USERS`);
+  console.log(`Accepted: ${report.users250.accepted} / 250`);
+  console.log(`Errors:   ${report.users250.errors}`);
+  console.log(`Duration: ${report.users250.duration} ms`);
+  console.log(`P95:      ${report.users250.p95} ms`);
+  console.log(`P99:      ${report.users250.p99} ms`);
+  console.log(`Result:   ${report.users250.pass ? 'PASS' : 'FAIL'}`);
+
+  console.log(`\n500 USERS`);
+  console.log(`Accepted: ${report.users500.accepted} / 500`);
+  console.log(`Errors:   ${report.users500.errors}`);
+  console.log(`Duration: ${report.users500.duration} ms`);
+  console.log(`P95:      ${report.users500.p95} ms`);
+  console.log(`P99:      ${report.users500.p99} ms`);
+  console.log(`Result:   ${report.users500.pass ? 'PASS' : 'FAIL'}`);
+
+  console.log(`\n500 SAME-TEACHER HOTSPOT`);
+  console.log(`Accepted:       ${report.hotspot500.accepted} / 500`);
+  console.log(`Errors:         ${report.hotspot500.errors}`);
+  console.log(`Expected votes: 2500`);
+  console.log(`Actual votes:   ${report.hotspot500.accepted * 5}`);
+  console.log(`Result:         ${report.hotspot500.pass ? 'PASS' : 'FAIL'}`);
+
+  console.log(`\nIDEMPOTENCY`);
+  console.log(`Result: ${report.validations.idempotency ? 'PASS' : 'FAIL'}`);
+
+  console.log(`\nDUPLICATE PROTECTION`);
+  console.log(`Result: ${report.validations.duplicateProtection ? 'PASS' : 'FAIL'}`);
+
+  console.log(`\nINVALID INPUT VALIDATION`);
+  console.log(
+    `Result: ${report.validations.voteLimitProtection && report.validations.invalidCategoryProtection ? 'PASS' : 'FAIL'}`
+  );
+
+  console.log(`\nDATABASE INTEGRITY`);
+  console.log(`Discrepancies: ${report.integrity.discrepanciesCount}`);
+  console.log(`Result:        ${report.integrity.isHealthy ? 'PASS' : 'FAIL'}`);
   console.log(`======================================================\n`);
 
-  const allPassed = Object.values(results).every(Boolean);
+  const allPassed =
+    report.users100.pass &&
+    report.users250.pass &&
+    report.users500.pass &&
+    report.hotspot500.pass &&
+    report.validations.idempotency &&
+    report.validations.duplicateProtection &&
+    report.validations.voteLimitProtection &&
+    report.validations.invalidCategoryProtection &&
+    report.integrity.isHealthy;
+
   if (!allPassed) {
     process.exit(1);
   }

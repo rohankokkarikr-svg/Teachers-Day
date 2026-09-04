@@ -918,16 +918,20 @@ export async function reactivateUserSession(
   email?: string,
   name?: string
 ): Promise<{ success: boolean }> {
-  // 1. Unrevoke from local storage
-  unrevokeUserSessionLocally(userId, deviceId, email, name);
+  const nameSlug = normalizeNameKey(name);
+  const cleanEmail = email || (nameSlug ? `${nameSlug}@student.college` : undefined);
+
+  // 1. Unrevoke from all local storage lists
+  unrevokeUserSessionLocally(userId, deviceId, cleanEmail, name);
 
   // 2. Mark active in local sessions
   const localSessions = getLocalStorage<UserSessionRecord[]>(STORAGE_SESSIONS_KEY, []);
   const updated = localSessions.map((s) => {
     if (
       s.user_id === userId ||
-      (email && s.email.toLowerCase() === email.toLowerCase()) ||
-      (name && normalizeNameKey(s.full_name) === normalizeNameKey(name))
+      (cleanEmail && s.email.toLowerCase() === cleanEmail.toLowerCase()) ||
+      (name && normalizeNameKey(s.full_name) === nameSlug) ||
+      (deviceId && s.device_id === deviceId)
     ) {
       unrevokeUserSessionLocally(s.user_id, s.device_id, s.email, s.full_name);
       return { ...s, is_active: true, revoked_at: undefined };
@@ -938,7 +942,7 @@ export async function reactivateUserSession(
 
   // 3. Dispatch local reactivation events
   window.dispatchEvent(
-    new CustomEvent('td_user_session_reactivated', { detail: { userId, email, name } })
+    new CustomEvent('td_user_session_reactivated', { detail: { userId, email: cleanEmail, name } })
   );
   window.dispatchEvent(new Event('td_user_sessions_updated'));
   window.dispatchEvent(new Event('storage'));
@@ -946,25 +950,66 @@ export async function reactivateUserSession(
   // 4. Update Supabase across user_sessions and profiles
   if (isSupabaseConfigured) {
     try {
-      await supabase
-        .from('user_sessions')
-        .update({ is_active: true, revoked_at: null })
-        .or(`user_id.eq.${userId}${email ? `,email.eq.${email}` : ''}`);
+      // 4a. Update user_sessions table
+      if (userId) {
+        await supabase
+          .from('user_sessions')
+          .update({ is_active: true, revoked_at: null })
+          .eq('user_id', userId);
+      }
+      if (cleanEmail) {
+        await supabase
+          .from('user_sessions')
+          .update({ is_active: true, revoked_at: null })
+          .ilike('email', cleanEmail);
+      }
+      if (name) {
+        await supabase
+          .from('user_sessions')
+          .update({ is_active: true, revoked_at: null })
+          .ilike('full_name', name.trim());
+      }
+      if (deviceId) {
+        await supabase
+          .from('user_sessions')
+          .update({ is_active: true, revoked_at: null })
+          .eq('device_id', deviceId);
+      }
 
-      await supabase
-        .from('profiles')
-        .update({ is_active: true, revoked_at: null })
-        .or(`id.eq.${userId}${email ? `,email.eq.${email}` : ''}`);
+      // 4b. Update profiles table
+      try {
+        if (userId) {
+          await supabase
+            .from('profiles')
+            .update({ is_active: true, revoked_at: null })
+            .eq('id', userId);
+        }
+        if (cleanEmail) {
+          await supabase
+            .from('profiles')
+            .update({ is_active: true, revoked_at: null })
+            .ilike('email', cleanEmail);
+        }
+        if (name) {
+          await supabase
+            .from('profiles')
+            .update({ is_active: true, revoked_at: null })
+            .ilike('full_name', name.trim());
+        }
+      } catch {
+        // Handled gracefully
+      }
 
-      // Broadcast access restored event
+      // 4c. Broadcast access restored event
       const authChannel = supabase.channel('system_auth_channel');
       await authChannel.send({
         type: 'broadcast',
         event: 'user_access_granted',
         payload: {
           userId,
-          email: email || null,
+          email: cleanEmail || null,
           name: name || null,
+          deviceId: deviceId || null,
           timestamp: Date.now(),
         },
       });
@@ -1037,5 +1082,6 @@ export async function reactivateMultipleUserSessions(
 
   return { success: true, count: userIds.length };
 }
+
 
 

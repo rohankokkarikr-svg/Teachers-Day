@@ -12,6 +12,7 @@ import {
   isSessionRevoked,
   checkUserAccessAllowed,
   updateSessionHeartbeat,
+  unrevokeUserSessionLocally,
 } from '../lib/sessionService';
 import { toast } from '../components/ui/Toast';
 import type { Profile, UserRole } from '../types';
@@ -280,6 +281,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const currentProfile = profileRef.current;
           if (currentProfile?.role !== 'admin') {
             handleEnforceForcedLogout('All student sessions were logged out by the administrator.');
+          }
+        })
+        .on('broadcast', { event: 'user_access_granted' }, (payload: any) => {
+          const data = payload?.payload;
+          if (data?.userId || data?.deviceId || data?.email || data?.name) {
+            unrevokeUserSessionLocally(data.userId, data.deviceId, data.email, data.name);
+          }
+        })
+        .on('broadcast', { event: 'user_access_granted_batch' }, (payload: any) => {
+          const data = payload?.payload;
+          if (Array.isArray(data?.userIds)) {
+            data.userIds.forEach((uId: string) => unrevokeUserSessionLocally(uId));
           }
         })
         .on(

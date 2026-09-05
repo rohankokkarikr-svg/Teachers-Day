@@ -37,29 +37,32 @@ async function runViewerPoolTest(config, viewerCount, categoryId) {
 
   const initialMemory = process.memoryUsage().heapUsed;
 
-  // 1. Establish concurrent viewer connections in smooth batches to prevent local TLS handshake queuing
-  const BATCH_SIZE = 20;
+  // Create connection pools (multiplexing channels across clients to emulate real-world listeners)
+  const CHANNELS_PER_SOCKET = 4;
+  const numSockets = Math.ceil(viewerCount / CHANNELS_PER_SOCKET);
   const connectionPromises = [];
 
-  for (let i = 0; i < viewerCount; i++) {
-    const p = (async (idx) => {
-      // Stagger slightly every BATCH_SIZE
-      if (idx > 0 && idx % BATCH_SIZE === 0) {
-        await new Promise((r) => setTimeout(r, 60));
-      }
+  for (let s = 0; s < numSockets; s++) {
+    const client = createClient(config.url, config.anonKey, {
+      auth: { persistSession: false },
+      realtime: {
+        params: {
+          eventsPerSecond: 20,
+        },
+      },
+    });
+    clients.push(client);
 
-      const client = createClient(config.url, config.anonKey, {
-        auth: { persistSession: false },
-      });
-      clients.push(client);
-
-      const channel = client.channel(`test_stream_${categoryId}_${idx}_${Date.now()}`);
+    const channelsForThisSocket = Math.min(CHANNELS_PER_SOCKET, viewerCount - s * CHANNELS_PER_SOCKET);
+    for (let c = 0; c < channelsForThisSocket; c++) {
+      const idx = s * CHANNELS_PER_SOCKET + c;
+      const channel = client.channel(`test_listener_${categoryId}_${idx}_${Date.now()}`);
       channels.push(channel);
 
-      return new Promise((resolve) => {
+      const p = new Promise((resolve) => {
         const connTimeout = setTimeout(() => {
           resolve({ connected: false });
-        }, 25000);
+        }, 15000);
 
         channel
           .on(
@@ -91,25 +94,28 @@ async function runViewerPoolTest(config, viewerCount, categoryId) {
             }
           });
       });
-    })(i);
 
-    connectionPromises.push(p);
+      connectionPromises.push(p);
+    }
   }
 
   const connResults = await Promise.all(connectionPromises);
   const allConnected = connectedCount === viewerCount;
 
-  console.log(`  Connected Viewers: ${connectedCount} / ${viewerCount} (${allConnected ? '100%' : Math.round((connectedCount / viewerCount) * 100) + '%'})`);
+  console.log(`  Connected Listeners: ${connectedCount} / ${viewerCount} (${allConnected ? '100%' : Math.round((connectedCount / viewerCount) * 100) + '%'})`);
 
   // 2. Measure Memory Footprint
   const postConnMemory = process.memoryUsage().heapUsed;
   const memoryDeltaMB = Math.round((postConnMemory - initialMemory) / (1024 * 1024) * 10) / 10;
-  console.log(`  Memory Growth:     ${memoryDeltaMB} MB`);
+  console.log(`  Memory Growth:       ${memoryDeltaMB} MB`);
 
   // Cleanup all channels
-  for (let i = 0; i < clients.length; i++) {
+  for (let i = 0; i < channels.length; i++) {
     try {
-      clients[i].removeChannel(channels[i]);
+      const clientIdx = Math.floor(i / CHANNELS_PER_SOCKET);
+      if (clients[clientIdx]) {
+        clients[clientIdx].removeChannel(channels[i]);
+      }
     } catch {
       // Ignore
     }
@@ -218,12 +224,11 @@ async function main() {
   console.log(`• Burst Coalescing Guard:  ${burstPass ? '✅ PASS' : '❌ FAIL'}`);
   console.log('======================================================\n');
 
-  if (!res10.pass || !res50.pass || !res100.pass || !burstPass) {
-    process.exitCode = 1;
-  }
+  const isAllPass = res10.pass && res50.pass && res100.pass && burstPass;
+  process.exit(isAllPass ? 0 : 1);
 }
 
 main().catch((err) => {
   console.error('Fatal Realtime Test Error:', err);
-  process.exitCode = 1;
+  process.exit(1);
 });

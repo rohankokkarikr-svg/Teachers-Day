@@ -249,98 +249,100 @@ export function useVoting(categoryId: string, userId?: string) {
       }));
 
     try {
-      if (isSupabaseConfigured) {
-        // Resolve student UUID
-        let studentId = userId;
-        const isValidUUID =
-          studentId &&
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(studentId);
-
-        const authProfile = getLocalStorage<Profile | null>('td_auth_profile', null);
-        if (
-          !isValidUUID &&
-          authProfile?.id &&
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authProfile.id)
-        ) {
-          studentId = authProfile.id;
-        }
-
-        const deviceId = getOrCreateDeviceId();
-
-        const finalStudentId =
-          studentId &&
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(studentId)
-            ? studentId
-            : null;
-
-        const startTime = Date.now();
-
-        // 4. ATOMIC DATABASE RPC: Execute the single transactional vote submission in PostgreSQL
-        const rpcPromise = supabase.rpc('submit_votes', {
-          p_category_id: categoryId,
-          p_votes: votePayload,
-          p_student_id: finalStudentId,
-          p_device_id: deviceId || null,
-          p_submission_id: clientSubmissionId,
-        });
-
-        const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
-          setTimeout(() => reject(new Error('Submission timed out. Please check your internet connection and retry.')), 8000)
-        );
-
-        const { data: rpcRes, error: rpcErr } = (await Promise.race([rpcPromise, timeoutPromise])) as any;
-        const latency = Date.now() - startTime;
-        captureMetric('vote_submission_latency', latency, 'ms');
-
-        if (rpcErr) {
-          captureError(rpcErr, { categoryId, studentId, submissionId: clientSubmissionId }, 'voting');
-          captureEvent('vote_submitted_error', 'voting', { error: rpcErr.message, categoryId });
-          // Keep pendingSubmissionIdRef for idempotent retry
-          const errMsg = rpcErr.message || 'Submission failed. Please check your network and retry.';
-          return { success: false, message: errMsg };
-        }
-
-        if (rpcRes && rpcRes.success === false) {
-          const errorCode = rpcRes.error_code || rpcRes.status;
-          captureEvent('vote_submitted_rejected', 'voting', { errorCode, categoryId });
-
-          if (errorCode === 'DUPLICATE_SUBMISSION' || rpcRes.message?.includes('already submitted')) {
-            recordLocalVote();
-            pendingSubmissionIdRef.current = null;
-            return { success: false, message: 'You have already submitted your vote for this category.' };
-          }
-
-          if (errorCode === 'VOTE_LIMIT_EXCEEDED') {
-            return {
-              success: false,
-              message: `Please allocate exactly ${VOTES_PER_CATEGORY} votes before submitting.`,
-            };
-          }
-
-          if (errorCode === 'CATEGORY_NOT_FOUND' || errorCode === 'CATEGORY_INACTIVE') {
-            return { success: false, message: 'Voting is currently closed or unavailable for this category.' };
-          }
-
-          if (errorCode === 'TEACHER_NOT_FOUND' || errorCode === 'TEACHER_NOT_IN_CATEGORY') {
-            return { success: false, message: 'One or more selected teachers are not eligible for this category.' };
-          }
-
-          if (errorCode === 'ACCOUNT_REVOKED') {
-            return { success: false, message: 'Access Denied: Your account access has been restricted by the administrator.' };
-          }
-
-          return { success: false, message: rpcRes.message || 'Submission was rejected by the server.' };
-        }
-
-        // Idempotency: Success or already_processed
-        if (rpcRes && (rpcRes.success === true || rpcRes.status === 'ALREADY_PROCESSED' || rpcRes.status === 'already_processed')) {
-          pendingSubmissionIdRef.current = null;
-        }
+      if (!isSupabaseConfigured) {
+        return {
+          success: false,
+          message: 'Voting server is unavailable. Your vote has NOT been submitted.',
+        };
       }
+
+      // Resolve student UUID
+      let studentId = userId;
+      const isValidUUID =
+        studentId &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(studentId);
+
+      const authProfile = getLocalStorage<Profile | null>('td_auth_profile', null);
+      if (
+        !isValidUUID &&
+        authProfile?.id &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authProfile.id)
+      ) {
+        studentId = authProfile.id;
+      }
+
+      const deviceId = getOrCreateDeviceId();
+
+      const finalStudentId =
+        studentId &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(studentId)
+          ? studentId
+          : null;
+
+      const startTime = Date.now();
+
+      // 4. ATOMIC DATABASE RPC: Execute the single transactional vote submission in PostgreSQL
+      const rpcPromise = supabase.rpc('submit_votes', {
+        p_category_id: categoryId,
+        p_votes: votePayload,
+        p_student_id: finalStudentId,
+        p_device_id: deviceId || null,
+        p_submission_id: clientSubmissionId,
+      });
+
+      const timeoutPromise = new Promise<{ data: null; error: Error }>((_, reject) =>
+        setTimeout(() => reject(new Error('Submission timed out. Please check your internet connection and retry.')), 8000)
+      );
+
+      const { data: rpcRes, error: rpcErr } = (await Promise.race([rpcPromise, timeoutPromise])) as any;
+      const latency = Date.now() - startTime;
+      captureMetric('vote_submission_latency', latency, 'ms');
+
+      if (rpcErr) {
+        captureError(rpcErr, { categoryId, studentId, submissionId: clientSubmissionId }, 'voting');
+        captureEvent('vote_submitted_error', 'voting', { error: rpcErr.message, categoryId });
+        // Keep pendingSubmissionIdRef for idempotent retry
+        const errMsg = rpcErr.message || 'Submission failed. Please check your network and retry.';
+        return { success: false, message: errMsg };
+      }
+
+      if (rpcRes && rpcRes.success === false) {
+        const errorCode = rpcRes.error_code || rpcRes.status;
+        captureEvent('vote_submitted_rejected', 'voting', { errorCode, categoryId });
+
+        if (errorCode === 'DUPLICATE_SUBMISSION' || rpcRes.message?.includes('already submitted')) {
+          recordLocalVote();
+          pendingSubmissionIdRef.current = null;
+          return { success: false, message: 'You have already submitted your vote for this category.' };
+        }
+
+        if (errorCode === 'VOTE_LIMIT_EXCEEDED') {
+          return {
+            success: false,
+            message: `Please allocate exactly ${VOTES_PER_CATEGORY} votes before submitting.`,
+          };
+        }
+
+        if (errorCode === 'CATEGORY_NOT_FOUND' || errorCode === 'CATEGORY_INACTIVE') {
+          return { success: false, message: 'Voting is currently closed or unavailable for this category.' };
+        }
+
+        if (errorCode === 'TEACHER_NOT_FOUND' || errorCode === 'TEACHER_NOT_IN_CATEGORY') {
+          return { success: false, message: 'One or more selected teachers are not eligible for this category.' };
+        }
+
+        if (errorCode === 'ACCOUNT_REVOKED') {
+          return { success: false, message: 'Access Denied: Your account access has been restricted by the administrator.' };
+        }
+
+        return { success: false, message: rpcRes.message || 'Submission was rejected by the server.' };
+      }
+
+      // Idempotency: Success or already_processed confirmed by server
+      pendingSubmissionIdRef.current = null;
 
       // Record successful vote locally
       recordLocalVote();
-      pendingSubmissionIdRef.current = null;
       captureEvent('vote_submitted_success', 'voting', { categoryId });
 
       return {

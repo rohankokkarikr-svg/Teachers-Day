@@ -59,6 +59,13 @@ function startStaticServer(port = 4173) {
         return;
       }
 
+      // Stub Vercel speed insights gracefully when testing offline / static build
+      if (cleanPath.startsWith('_vercel/')) {
+        res.writeHead(200, { 'Content-Type': 'application/javascript' });
+        res.end('/* Vercel Speed Insights stub */');
+        return;
+      }
+
       // If requested a file with an extension (.js, .css, etc.) that doesn't exist, return 404 instead of index.html
       if (cleanPath && cleanPath.includes('.') && !cleanPath.endsWith('.html')) {
         console.error(`[Static 404] Missing asset: ${cleanPath} (looked at ${filePath})`);
